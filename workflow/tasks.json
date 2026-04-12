@@ -1,0 +1,34 @@
+{
+  "phases": {
+    "requirement": {
+      "approval_required": true,
+      "output_files": ["docs/requirements.md"],
+      "prompt": "You are acting as a Business Analyst.\n\nBased on spec.yaml and CLAUDE.md:\n1. Draft detailed functional and non-functional requirements\n2. Create docs/requirements.md with all user stories and acceptance criteria\n3. Identify technical constraints, dependencies, and risks\n4. Define success metrics for the project\n\nOutput a thorough requirements document. When done, write: PHASE_COMPLETE: requirement"
+    },
+    "design": {
+      "approval_required": true,
+      "output_files": ["docs/design.md"],
+      "prompt": "You are acting as a Software Architect.\n\nBased on spec.yaml, CLAUDE.md, and docs/requirements.md:\n1. Design the system architecture with component boundaries\n2. Create docs/design.md with text-based component diagrams\n3. Define API contracts, data models, and database schema\n4. Document technology choices and trade-offs\n5. Define folder structure and module organization\n\nOutput a thorough design document. When done, write: PHASE_COMPLETE: design"
+    },
+    "planning": {
+      "approval_required": false,
+      "output_files": ["docs/planning.md", "workflow/tasks_breakdown.md"],
+      "prompt": "You are acting as a Project Manager.\n\nBased on docs/requirements.md and docs/design.md:\n1. Break implementation into discrete, actionable tasks\n2. Create workflow/tasks_breakdown.md with tasks sized S/M/L\n3. Define implementation order and inter-task dependencies\n4. Create docs/planning.md with a sprint plan\n5. Identify the critical path\n\nWhen done, write: PHASE_COMPLETE: planning"
+    },
+    "implementation": {
+      "approval_required": false,
+      "output_files": [],
+      "prompt": "You are acting as a Senior Developer.\n\nBased on spec.yaml, CLAUDE.md, docs/design.md, and workflow/tasks_breakdown.md:\n1. Implement all features following the architecture exactly\n2. Follow every rule in CLAUDE.md\n3. Write clean, production-quality code\n4. Update docs inline as features are implemented\n5. Work through tasks in the order defined in workflow/tasks_breakdown.md\n\nWhen done, write: PHASE_COMPLETE: implementation"
+    },
+    "testing": {
+      "approval_required": true,
+      "output_files": ["docs/test_report.md"],
+      "prompt": "You are acting as a QA Engineer.\n\nBased on docs/requirements.md and the implemented code:\n1. Write unit tests for every feature\n2. Write integration tests for all critical paths\n3. Fix all bugs discovered during testing\n4. Create docs/test_report.md with coverage summary and pass/fail results\n5. Verify all acceptance criteria from requirements are met\n\nWhen done, write: PHASE_COMPLETE: testing"
+    },
+    "review": {
+      "approval_required": false,
+      "output_files": ["docs/review_summary.md"],
+      "prompt": "You are acting as a Tech Lead doing the final review.\n\nBased on all documentation and code:\n1. Verify code quality and adherence to every CLAUDE.md rule\n2. Confirm all requirements from docs/requirements.md are satisfied\n3. Verify test coverage is adequate\n4. Check for security issues, performance concerns, and tech debt\n5. Create docs/review_summary.md with findings and final sign-off\n\nWhen done, write: PHASE_COMPLETE: review"
+    }
+  }
+}

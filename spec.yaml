@@ -1,0 +1,21 @@
+project_name: My App
+tech_stack: Node.js
+repo: owner/repo-name          # GitHub repo (owner/name) — used by gh CLI
+slack_webhook: ""              # https://hooks.slack.com/services/... (optional)
+
+phases:
+  - requirement
+  - design
+  - planning
+  - implementation
+  - testing
+  - review
+
+# Which phases require human approval before advancing
+phase_approvals:
+  requirement: true
+  design: true
+  planning: false
+  implementation: false
+  testing: true
+  review: false
