@@ -9,6 +9,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+from sdlc_orchestrator.utils import sdlc_home
+
 
 class State(str, Enum):
     DRAFT_REQUIREMENT            = "draft_requirement"
@@ -91,8 +93,10 @@ class WorkflowState:
     """Loads, mutates, and persists workflow/state.json."""
 
     def __init__(self, project_dir: Path):
-        self.project_dir = project_dir
-        self.path = project_dir / "workflow" / "state.json"
+        self.project_dir = project_dir.resolve()
+        _home = sdlc_home(project_dir)
+        self.path = _home / "workflow" / "state.json"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self._data: dict = self._load()
 
     # ── persistence ──────────────────────────────────────────────────────────

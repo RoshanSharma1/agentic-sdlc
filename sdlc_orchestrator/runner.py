@@ -22,6 +22,7 @@ from sdlc_orchestrator.phases import get_handler
 from sdlc_orchestrator.state_machine import (
     State, WorkflowState, APPROVAL_STATES, STATE_LABELS
 )
+from sdlc_orchestrator.utils import sdlc_home
 
 console = Console()
 
@@ -63,7 +64,7 @@ class Orchestrator:
         prompt = handler.build_prompt(self.memory, self.project_dir)
 
         # Log prompt for debugging
-        log_dir = self.project_dir / "workflow" / "logs"
+        log_dir = sdlc_home(self.project_dir) / "workflow" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / f"{handler.phase_name}_prompt.md").write_text(prompt)
 
@@ -73,7 +74,7 @@ class Orchestrator:
         console.print(f"[dim]Calling {self.executor.name()} ...[/dim]")
         result = self.executor.run(prompt, self.project_dir)
 
-        # Always save output log
+        # Always save output log (log_dir already set above)
         (log_dir / f"{handler.phase_name}.log").write_text(result.output)
 
         if not result.success and not result.phase_complete:

@@ -47,6 +47,6 @@ Deeply analyze this repository and produce `memory/project.md` with the followin
 
 ---
 
-Write everything to `memory/project.md`.  
-Create `memory/` directory if it doesn't exist.  
+Write everything to `.sdlc/memory/project.md`.  
+Create `.sdlc/memory/` directory if it doesn't exist.  
 When done, output exactly: PHASE_COMPLETE: analyze-repo
