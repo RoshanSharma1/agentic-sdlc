@@ -1,17 +1,23 @@
-# Projects created by sdlc init inside this directory
-*/spec.yaml
-*/workflow/
-*/memory/
-*/feedback/
-*/CLAUDE.md
+# Claude Code internals
+.claude/
 
+# Python
 __pycache__/
 *.pyc
 *.egg-info/
 dist/
 build/
 .venv/
-workflow/logs/*.log
-workflow/logs/*_prompt.md
+
+# SDLC projects created inside this directory (run sdlc setup outside the package)
+*/spec.yaml
+*/.sdlc/
+*/CLAUDE.md
+*/.claude/
+*/workflow/
+*/memory/
+*/feedback/
+
+# Secrets
 .env
 *.env
