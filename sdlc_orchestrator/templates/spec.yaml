@@ -1,0 +1,6 @@
+project_name: My App
+description: A short description of what this project does.
+tech_stack: Node.js
+repo: owner/repo-name        # GitHub repo — used by gh CLI for issues/PRs/board
+slack_webhook: ""            # https://hooks.slack.com/services/... (optional)
+executor: claude-code        # claude-code | codex

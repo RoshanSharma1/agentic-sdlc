@@ -1,3 +1,10 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.venv/
 workflow/logs/*.log
+workflow/logs/*_prompt.md
 .env
 *.env
