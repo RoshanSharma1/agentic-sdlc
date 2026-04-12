@@ -188,7 +188,7 @@ def init(name, description, stack, repo, slack, dir, upgrade_skills):
     if repo:
         _setup_github(project_dir, repo, name)
 
-    console.print(f"\n[bold green]Ready.[/bold green] cd {project_dir.name} && sdlc run")
+    console.print(f"\n[bold green]Ready.[/bold green] Run:\n\n  cd {project_dir} && sdlc run")
 
 
 def _setup_github(project_dir: Path, repo: str, name: str) -> None:

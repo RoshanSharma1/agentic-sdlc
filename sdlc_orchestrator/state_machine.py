@@ -99,7 +99,11 @@ class WorkflowState:
 
     def _load(self) -> dict:
         if self.path.exists():
-            return json.loads(self.path.read_text())
+            data = json.loads(self.path.read_text())
+            # Migrate old schema (phase/phase_state → state)
+            if "state" not in data and "phase" in data:
+                data = self._defaults()
+            return data
         return self._defaults()
 
     def save(self) -> None:

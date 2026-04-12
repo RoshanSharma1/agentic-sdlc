@@ -57,7 +57,7 @@ class Orchestrator:
             console.print(f"[red]No handler for state: {state}[/red]")
             return False
 
-        console.rule(f"[bold blue]Phase: {handler.phase_name}  |  State: {state.value}[/bold]")
+        console.rule(f"[bold blue]Phase: {handler.phase_name}  |  State: {state.value}[/bold blue]")
 
         # Build prompt with injected memory
         prompt = handler.build_prompt(self.memory, self.project_dir)
