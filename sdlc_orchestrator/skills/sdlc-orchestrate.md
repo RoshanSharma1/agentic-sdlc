@@ -8,6 +8,33 @@ Edit, Bash). Pause only when a human approval gate is reached.
 
 ---
 
+## Step 0 — Acquire tick lock (FIRST THING, EVERY TIME)
+
+```bash
+sdlc tick acquire
+```
+
+If this exits non-zero, another tick is already running — stop immediately.
+
+---
+
+## Step 0b — Resume, don't restart
+
+Before doing any work, check what's already been done:
+
+1. Read the artifact for the current state (e.g. `plan.md` for
+   `implementation_in_progress`). If it's already complete, advance state
+   and return — don't re-do work.
+2. If an artifact is partial (e.g. `plan.md` has some `[x] done` tasks),
+   continue from where it stopped.
+3. Never re-implement a task that's already committed. Check `git log` if
+   unsure.
+
+**Commit before advancing state. Commit before stopping.** All work must be on
+disk before this tick ends.
+
+---
+
 ## Your toolbox
 
 These `sdlc` commands are your state and integration layer — call them via Bash:
@@ -18,30 +45,38 @@ These `sdlc` commands are your state and integration layer — call them via Bas
 | `sdlc state set <state>` | Advance to next state after completing a phase |
 | `sdlc state approve` | Advance past an approval gate (only after human says so) |
 | `sdlc artifact read <name>` | Read a phase artifact (requirements, design, plan, …) |
-| `sdlc notify <phase> <event>` | Send Slack notification |
+| `sdlc notify <phase> <event>` | Send Slack notification (auto-fires at gates via state set) |
 | `sdlc github create-pr <branch> <phase>` | Open GitHub PR for phase output |
 | `sdlc github create-issue <title> <body-file>` | Create GitHub issue |
+| `sdlc tick release` | Release tick lock (LAST THING, EVERY TIME) |
 
 Read and write all project files directly with your native tools — you do not
 need to pipe everything through `sdlc`. Use `sdlc` only for state transitions
 and integrations.
+
+**Slack notifications fire automatically** when you call `sdlc state set` and
+the new state is an approval gate. You do not need to call `sdlc notify`
+manually at gates.
 
 ---
 
 ## Operating loop
 
 ```
+0. sdlc tick acquire              — prevent concurrent runs (exit if locked)
 1. sdlc state get                 — where am I?
-2. state == done?                 — stop, congratulate
-3. state is approval gate?        — explain what needs review, how to proceed, stop
-4. execute current phase          — do the actual work (instructions below)
-5. sdlc state set <next-state>    — advance
-6. next state is approval gate?   — notify human, explain, stop
-7. goto 1
+2. state == done?                 — sdlc tick release, stop, congratulate
+3. state is approval gate?        — sdlc tick release, explain what needs review, stop
+4. resume check                   — read existing artifact; skip completed work
+5. execute current phase          — do the actual work (one task if in implementation)
+6. commit all changes to git      — before advancing state
+7. sdlc state set <next-state>    — advance (Slack fires automatically at gates)
+8. sdlc tick release              — always release before stopping
+9. stop (next /loop tick continues)
 ```
 
 Never skip a step. Never advance state before the phase work is complete and
-verified. When in doubt, do more work rather than less.
+committed. When in doubt, do more work rather than less.
 
 ---
 
@@ -200,12 +235,14 @@ To review:
 
 To approve and continue:
   sdlc state approve
-  (then tell me to continue)
+  (then run /loop 10m /sdlc-orchestrate or /sdlc-orchestrate to resume)
 
 To give feedback and iterate:
   sdlc feedback <phase> "your feedback"
-  (then tell me to continue)
+  (then run /sdlc-orchestrate)
 ```
+
+A Slack notification has been sent automatically.
 
 ---
 
@@ -218,3 +255,4 @@ To give feedback and iterate:
 - Follow every rule in CLAUDE.md
 - If genuinely blocked by an external dependency, run `sdlc state set blocked`
   and explain clearly what is missing
+- Always call `sdlc tick release` before stopping (even on error)

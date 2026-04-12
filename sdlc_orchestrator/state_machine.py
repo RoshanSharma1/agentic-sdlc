@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from sdlc_orchestrator.utils import sdlc_home
 
@@ -92,8 +92,18 @@ STATE_LABELS: dict[State, str] = {
 class WorkflowState:
     """Loads, mutates, and persists workflow/state.json."""
 
-    def __init__(self, project_dir: Path):
+    def __init__(self, project_dir: Path,
+                 notifier: Optional[Callable[[State, str], None]] = None):
+        """
+        Args:
+            project_dir: root of the project
+            notifier: optional callable(new_state, artifact_path) invoked
+                      automatically when a transition lands on an approval gate.
+                      Keeping this as a callable injection keeps state_machine.py
+                      free of integration imports.
+        """
         self.project_dir = project_dir.resolve()
+        self._notifier = notifier
         _home = sdlc_home(project_dir)
         self.path = _home / "workflow" / "state.json"
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -190,6 +200,10 @@ class WorkflowState:
         if new_state not in (State.TEST_FAILURE_LOOP, State.FEEDBACK_INCORPORATION):
             self._data["retry_count"] = 0
         self.save()
+        if new_state in APPROVAL_STATES and self._notifier:
+            # Determine the most relevant artifact path for the notification
+            artifact_path = self._latest_artifact_path()
+            self._notifier(new_state, artifact_path)
 
     def increment_retry(self) -> None:
         self._data["retry_count"] = self.retry_count + 1
@@ -216,3 +230,11 @@ class WorkflowState:
             "state": state.value,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
+
+    def _latest_artifact_path(self) -> str:
+        """Return the path of the most recently modified artifact file, or ''."""
+        artifacts_dir = self.path.parent / "artifacts"
+        if not artifacts_dir.exists():
+            return ""
+        files = sorted(artifacts_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
+        return str(files[0]) if files else ""

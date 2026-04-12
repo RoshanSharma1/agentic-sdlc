@@ -2,7 +2,7 @@
 sdlc CLI — human tools and Claude's state/integration toolbox.
 
 Human-facing:
-  sdlc setup [source]       set up a project (new or existing)
+  sdlc init [source]        scaffold a project (new or existing)
   sdlc answer [--file]      submit answers to requirement questions
   sdlc status               show current state in readable form
   sdlc relink [--all]       rebuild ~/.sdlc/projects/<slug> symlink
@@ -20,6 +20,9 @@ Claude-facing (called via Bash tool during /sdlc-orchestrate):
   sdlc github create-pr <branch> <phase>        open PR
   sdlc github create-issue <title> <body-file>  create issue
   sdlc github create-board                      create project board
+
+  sdlc tick acquire         acquire tick lock (prevent concurrent runs)
+  sdlc tick release         release tick lock
 """
 from __future__ import annotations
 
@@ -49,9 +52,22 @@ console = Console()
 def _require_project() -> Path:
     d = find_project_dir()
     if not d:
-        console.print("[red]No SDLC project found. Run [bold]sdlc setup[/bold] first.[/red]")
+        console.print("[red]No SDLC project found. Run [bold]sdlc init[/bold] first.[/red]")
         sys.exit(1)
     return d
+
+
+def _make_workflow_state(project_dir: Path) -> WorkflowState:
+    """Return a WorkflowState with the Slack notifier pre-wired from spec.yaml."""
+    from sdlc_orchestrator.integrations.slack import notify_from_spec
+
+    spec = MemoryManager(project_dir).spec()
+
+    def _notify(new_state: State, artifact_path: str) -> None:
+        notify_from_spec(spec, new_state.value, "awaiting_approval",
+                         extra=artifact_path)
+
+    return WorkflowState(project_dir, notifier=_notify)
 
 # ── source detection ──────────────────────────────────────────────────────────
 
@@ -196,12 +212,17 @@ def _run_analyze_skill(project_dir: Path, spec: dict) -> None:
         "architecture, domain concepts, testing, tech debt, deployment."
     )
     prompt = prompt.replace("{{PROJECT_NAME}}", spec.get("project_name", ""))
-    from sdlc_orchestrator.executor import ClaudeCodeExecutor
-    result = ClaudeCodeExecutor().run(prompt, project_dir)
-    if result.success:
-        console.print("  [green]✓[/green] Repo analysis complete")
-    else:
-        console.print("  [yellow]Repo analysis had warnings — edit .sdlc/memory/project.md[/yellow]")
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "--dangerously-skip-permissions"],
+            input=prompt, capture_output=True, text=True, cwd=str(project_dir), timeout=900,
+        )
+        if result.returncode == 0:
+            console.print("  [green]✓[/green] Repo analysis complete")
+        else:
+            console.print("  [yellow]Repo analysis had warnings — edit .sdlc/memory/project.md[/yellow]")
+    except Exception:
+        console.print("  [yellow]Repo analysis skipped (claude CLI not found)[/yellow]")
 
 def _open_in_editor(path: Path) -> None:
     import os
@@ -210,6 +231,8 @@ def _open_in_editor(path: Path) -> None:
         subprocess.run([editor, str(path)])
     else:
         console.print(f"  [dim]Edit: {path}[/dim]")
+
+
 
 def _common_setup(project_dir: Path, spec: dict, is_new: bool, upgrade_skills: bool) -> None:
     console.print()
@@ -259,13 +282,17 @@ def _common_setup(project_dir: Path, spec: dict, is_new: bool, upgrade_skills: b
 
     _setup_github_board(project_dir, spec)
 
-    slug = project_slug(project_dir)
     console.print(f"""
 [bold green]Ready.[/bold green]
 
   cd {project_dir}
-  claude                  ← open Claude Code
-  /sdlc-orchestrate       ← Claude takes control and runs the full SDLC
+
+  Next steps:
+    1. Open Claude Code in this directory
+    2. Run [bold]/sdlc-setup[/bold] — Claude interviews you and drafts requirements
+    3. Review requirements, then run [bold]/loop 10m /sdlc-orchestrate[/bold]
+
+  Claude drives the rest. You'll get Slack pings at each approval gate.
 """)
 
 
@@ -284,8 +311,8 @@ def cli():
 @cli.command()
 @click.argument("source", required=False)
 @click.option("--upgrade-skills", is_flag=True)
-def setup(source, upgrade_skills):
-    """Set up a project for SDLC orchestration.
+def init(source, upgrade_skills):
+    """Scaffold a project for SDLC orchestration.
 
     \b
     SOURCE:
@@ -293,6 +320,8 @@ def setup(source, upgrade_skills):
       owner/repo           clone from GitHub
       https://github.com/… clone from GitHub
       .  or  /path         use existing local directory
+
+    After running, open Claude Code and run /sdlc-setup to draft requirements.
     """
     kind = _detect_source(source)
     if kind == "new":
@@ -308,6 +337,16 @@ def setup(source, upgrade_skills):
         _setup_local(project_dir, upgrade_skills)
     else:
         _setup_local(Path(source).resolve(), upgrade_skills)
+
+
+@cli.command(hidden=True, deprecated=True)
+@click.argument("source", required=False)
+@click.option("--upgrade-skills", is_flag=True)
+@click.pass_context
+def setup(ctx, source, upgrade_skills):
+    """Deprecated alias for `sdlc init`."""
+    console.print("[yellow]`sdlc setup` is deprecated — use `sdlc init` instead.[/yellow]")
+    ctx.invoke(init, source=source, upgrade_skills=upgrade_skills)
 
 
 def _setup_new(upgrade_skills: bool) -> None:
@@ -418,7 +457,7 @@ def state_get():
 def state_set(new_state, force):
     """Transition to a new state. Called by Claude after completing a phase."""
     project_dir = _require_project()
-    wf = WorkflowState(project_dir)
+    wf = _make_workflow_state(project_dir)
     try:
         target = State(new_state)
     except ValueError:
@@ -444,7 +483,7 @@ def state_set(new_state, force):
 def state_approve():
     """Advance past the current approval gate. Human calls this after reviewing."""
     project_dir = _require_project()
-    wf = WorkflowState(project_dir)
+    wf = _make_workflow_state(project_dir)
 
     if wf.state not in APPROVAL_STATES:
         click.echo(f"Not an approval gate: {wf.state.value}", err=True)
@@ -671,6 +710,49 @@ def answer(from_file):
 
     wf.transition(State.REQUIREMENT_IN_PROGRESS)
     console.print("  Tell Claude to continue (/sdlc-orchestrate).")
+
+
+# ── sdlc tick (loop guard) ────────────────────────────────────────────────────
+
+@cli.group()
+def tick():
+    """Tick-lock helpers — prevent concurrent /sdlc-orchestrate runs."""
+    pass
+
+
+@tick.command("acquire")
+def tick_acquire():
+    """Acquire the tick lock. Exits non-zero if already locked."""
+    import fcntl
+    project_dir = _require_project()
+    lock_path = sdlc_home(project_dir) / "workflow" / "tick.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fh = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Write PID so release can verify ownership
+        lock_fh.write(str(subprocess.os.getpid()) if hasattr(subprocess, "os") else "")
+        lock_fh.flush()
+        click.echo("ok: lock acquired")
+        # Keep the file handle open — lock held until process exits
+        # Store path for release command
+        pid_file = lock_path.with_suffix(".pid")
+        import os
+        pid_file.write_text(str(os.getpid()))
+    except BlockingIOError:
+        click.echo("locked: another tick is running", err=True)
+        sys.exit(1)
+
+
+@tick.command("release")
+def tick_release():
+    """Release the tick lock."""
+    project_dir = _require_project()
+    lock_path = sdlc_home(project_dir) / "workflow" / "tick.lock"
+    pid_file = lock_path.with_suffix(".pid")
+    for p in (lock_path, pid_file):
+        p.unlink(missing_ok=True)
+    click.echo("ok: lock released")
 
 
 # ── sdlc relink ───────────────────────────────────────────────────────────────

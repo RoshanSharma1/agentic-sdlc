@@ -3,7 +3,21 @@ from __future__ import annotations
 
 import json
 import urllib.request
+from pathlib import Path
 from typing import Optional
+
+
+def _first_heading(artifact_path: str) -> str:
+    """Return the text of the first ## heading in an artifact file, or ''."""
+    if not artifact_path:
+        return ""
+    try:
+        for line in Path(artifact_path).read_text(encoding="utf-8").splitlines():
+            if line.startswith("## "):
+                return line.lstrip("# ").strip()
+    except Exception:
+        pass
+    return ""
 
 
 def send(webhook_url: str, phase: str, event: str,
@@ -24,12 +38,20 @@ def send(webhook_url: str, phase: str, event: str,
     lines.append(f"Phase: `{phase}` | Event: `{event}`")
 
     if event == "awaiting_approval":
-        lines.append(f":bust_in_silhouette: *Human approval required*")
-        lines.append(f"Run `sdlc approve` or answer the questions in the project directory.")
-    elif event == "blocked":
-        lines.append(f":stop_sign: *Blocked* — human intervention needed.")
+        lines.append(":bust_in_silhouette: *Human approval required*")
+        lines.append("Run `sdlc state approve` to continue.")
 
-    if extra:
+        # extra is the artifact path when called from state_machine notifier
+        if extra:
+            heading = _first_heading(extra)
+            lines.append(f":page_facing_up: Artifact: `{extra}`")
+            if heading:
+                lines.append(f"  _{heading}_")
+    elif event == "blocked":
+        lines.append(":stop_sign: *Blocked* — human intervention needed.")
+        if extra:
+            lines.append(extra)
+    elif extra:
         lines.append(extra)
 
     payload = json.dumps({"text": "\n".join(lines)}).encode()
