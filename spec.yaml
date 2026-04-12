@@ -1,6 +1,6 @@
 project_name: My App
 tech_stack: Node.js
-repo: owner/repo-name          # GitHub repo (owner/name) — used by gh CLI
+repo: RoshanSharma1/agentic-sdlc
 slack_webhook: ""              # https://hooks.slack.com/services/... (optional)
 
 phases:
