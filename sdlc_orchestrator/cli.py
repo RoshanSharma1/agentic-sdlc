@@ -481,7 +481,7 @@ def state_set(new_state, force):
 
 @state.command("approve")
 def state_approve():
-    """Advance past the current approval gate. Human calls this after reviewing."""
+    """Advance past the current approval gate. Fallback for projects without GitHub."""
     project_dir = _require_project()
     wf = _make_workflow_state(project_dir)
 
@@ -619,6 +619,40 @@ def github_create_issue(title, body_file):
     from sdlc_orchestrator.integrations.github import create_child_issue
     issue_num = create_child_issue(repo, title, body)
     click.echo(f"issue: {issue_num or 'failed'}")
+
+
+@github.command("pr-status")
+@click.argument("branch")
+def github_pr_status(branch):
+    """Check if the PR for a branch is approved or merged. Used by Claude to poll gates."""
+    project_dir = _require_project()
+    spec = MemoryManager(project_dir).spec()
+    repo = spec.get("repo", "")
+    if not repo:
+        click.echo("no-repo")
+        sys.exit(0)
+
+    from sdlc_orchestrator.integrations.github import get_pr_status
+    status = get_pr_status(repo, branch)
+    click.echo(status or "not-found")
+
+
+@github.command("ingest-feedback")
+@click.argument("branch")
+@click.argument("phase")
+def github_ingest_feedback(branch, phase):
+    """Pull PR review comments into .sdlc/feedback/<phase>.md. Called by Claude before advancing."""
+    project_dir = _require_project()
+    spec = MemoryManager(project_dir).spec()
+    repo = spec.get("repo", "")
+    if not repo:
+        click.echo("skipped: no repo configured")
+        return
+
+    from sdlc_orchestrator.integrations.github import pull_pr_feedback
+    feedback_dir = sdlc_home(project_dir) / "feedback"
+    count = pull_pr_feedback(repo, branch, feedback_dir, phase)
+    click.echo(f"ingested: {count} comment(s) → .sdlc/feedback/{phase}.md")
 
 
 @github.command("create-board")

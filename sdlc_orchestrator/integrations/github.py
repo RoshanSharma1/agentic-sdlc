@@ -116,6 +116,45 @@ def create_pr(repo: str, phase: str, branch: str,
         return None
 
 
+def get_pr_status(repo: str, branch: str) -> Optional[str]:
+    """
+    Return the status of the PR for this branch.
+    Returns: "approved", "merged", "closed", "open", or None if no PR found.
+    """
+    try:
+        r = _gh(
+            "pr", "view", branch,
+            "--repo", repo,
+            "--json", "state,reviewDecision,mergedAt",
+            check=False,
+        )
+        if r.returncode != 0:
+            return None
+        data = json.loads(r.stdout)
+        if data.get("mergedAt"):
+            return "merged"
+        state = data.get("state", "").upper()
+        if state == "CLOSED":
+            return "closed"
+        review = data.get("reviewDecision", "")
+        if review == "APPROVED":
+            return "approved"
+        return "open"
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        return None
+
+
+def get_pr_number(repo: str, branch: str) -> Optional[int]:
+    """Return the PR number for a branch, or None."""
+    try:
+        r = _gh("pr", "view", branch, "--repo", repo, "--json", "number", check=False)
+        if r.returncode != 0:
+            return None
+        return json.loads(r.stdout).get("number")
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        return None
+
+
 def get_pr_comments(repo: str, branch: str) -> list[str]:
     """Fetch review comments from the PR for this branch."""
     try:

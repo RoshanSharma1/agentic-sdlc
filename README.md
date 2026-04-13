@@ -12,21 +12,27 @@ A **Claude Code extension** that turns Claude into an autonomous software develo
 
 ## How It Works
 
-You install the extension, point it at a project, and run `/sdlc-setup` once inside Claude Code. After that, a single command — `/loop 10m /sdlc-orchestrate` — hands Claude the wheel. Claude works through each SDLC phase autonomously, committing code as it goes. When it reaches a decision point that needs human judgement (scope approval, design sign-off, code review), it pauses, notifies you via Slack or the terminal, and waits for `sdlc state approve`.
+You install the extension, point it at a project, and run `/sdlc-setup` once inside Claude Code. After that, a single command — `/loop 10m /sdlc-orchestrate` — hands Claude the wheel.
+
+Each phase produces a GitHub PR. The artifact (requirements, design, task plan) lives on a dedicated branch and is readable from anywhere. You review on GitHub, leave comments as feedback, and approve the PR. Claude detects the approval on the next tick and continues — no terminal commands needed.
 
 ```
 You                          Claude (autonomous)
 ────                         ───────────────────
 sdlc init                →   Scaffolds .sdlc/ directory
-/sdlc-setup              →   Interviews you, writes spec.yaml + requirements.md
+/sdlc-setup              →   Interviews you, writes spec.yaml
 /loop 10m /sdlc-orchestrate
                          →   Drafts clarifying questions
-⏸  sdlc answer          →   Builds structured requirements.md
-⏸  sdlc state approve   →   Produces design.md
-⏸  sdlc state approve   →   Produces plan.md
-                         →   Implements, tests, commits
-⏸  sdlc state approve   →   Opens PR, waits for review
-                         →   Incorporates feedback, marks done
+                             Opens PR: sdlc/requirements
+⏸  Review + approve PR   →   Reads your answers from PR comments
+                             Builds requirements.md, updates PR
+⏸  Approve PR            →   Produces design.md
+                             Opens PR: sdlc/design
+⏸  Approve PR            →   Produces plan.md
+                             Opens PR: sdlc/plan
+⏸  Approve PR            →   Implements, tests, commits
+                             Opens PR: sdlc/implementation
+⏸  Review + approve PR   →   Incorporates feedback, marks done
 ```
 
 ---
@@ -118,49 +124,39 @@ You can also run it manually without the loop:
 
 ---
 
-### Step 4 — Handle approval gates
+### Step 4 — Handle approval gates via GitHub PRs
 
-At each gate, Claude pauses and prints a message like:
+At each gate, Claude opens a PR and prints a message like:
 
 ```
-⏸  Requirements complete. Human review required.
+⏸  Requirements complete. Waiting for PR approval.
 
 What was produced:
-  • requirements.md — 12 functional requirements with acceptance criteria
-  • Non-functional: response time <200ms, 99.9% uptime
+  • 10 clarifying questions for you to answer
+  • docs/sdlc/requirements.md on branch sdlc/requirements
 
-To review:
-  .sdlc/workflow/artifacts/requirements.md
+Review PR: https://github.com/owner/repo/pull/3
 
-To approve and continue:
-  sdlc state approve
-  (then run /loop 10m /sdlc-orchestrate or /sdlc-orchestrate to resume)
+To approve: review and approve the PR on GitHub.
+  I'll automatically detect approval on the next tick and continue.
 ```
 
-If you have Slack configured, you'll also get a webhook notification with the same summary.
+If Slack is configured, you'll also get a webhook notification with the PR link.
 
-**To approve and let Claude continue:**
+**To answer requirement questions:**
+Open the PR on GitHub. Either:
+- Edit `docs/sdlc/requirements.md` directly on the branch and fill in each `**Answer:**` field, or
+- Leave review comments on the PR
+
+Then **approve the PR**. Claude picks up your answers from PR comments on the next tick — no terminal command needed.
+
+**To provide design or plan feedback:**
+Leave review comments on the relevant PR (`sdlc/design` or `sdlc/plan`). Claude ingests them when it detects PR approval and applies the feedback before advancing state.
+
+**No GitHub configured?** Fall back to the terminal:
 ```bash
 sdlc state approve
 ```
-Then Claude picks up on the next loop tick (or manually trigger `/sdlc-orchestrate`).
-
-**To answer requirement questions** (at the `awaiting_requirement_answer` gate):
-```bash
-# Opens your $EDITOR to fill in answers
-sdlc answer
-
-# Or provide a pre-written answers file
-sdlc answer --file my-answers.md
-```
-
-**To provide feedback instead of approving:**
-
-Edit the artifact directly (e.g. `requirements.md`) and add comments, then run:
-```bash
-sdlc answer --file feedback.md
-```
-Claude will incorporate the feedback before advancing.
 
 ---
 
@@ -190,16 +186,11 @@ History:
 
 ---
 
-### Step 6 — Review the PR
+### Step 6 — Review the implementation PR
 
-When implementation and testing are done, Claude opens a GitHub PR and enters the `awaiting_review` gate. Review the PR normally in GitHub. When you leave review comments, pull them into the feedback loop:
+When implementation and testing are done, Claude pushes the `sdlc/implementation` branch and opens a PR. Review it normally in GitHub — leave comments on specific lines or as general review comments.
 
-```bash
-sdlc github ingest-feedback
-sdlc state approve
-```
-
-Claude will apply the feedback (looping back to the appropriate phase if design or plan needs to change) and re-run until everything is clean.
+When you approve the PR, Claude detects it on the next tick, ingests your comments as feedback, and either marks the project done or loops back to the appropriate phase (design, plan, or implementation) depending on what needs to change.
 
 ---
 
@@ -324,28 +315,26 @@ The orchestrator manages 14 states across the workflow:
 
 ```
 my-project/
-├── .sdlc/                        # SDLC state (gitignored)
+├── docs/sdlc/                    # Phase artifacts — committed, visible on GitHub
+│   ├── requirements.md           # on branch: sdlc/requirements
+│   ├── design.md                 # on branch: sdlc/design
+│   ├── plan.md                   # on branch: sdlc/plan
+│   └── test_report.md            # on branch: sdlc/implementation
+├── .sdlc/                        # Orchestration state (gitignored)
 │   ├── spec.yaml                 # Project specification
 │   ├── memory/
 │   │   ├── global.md             # Organization-wide engineering rules
 │   │   └── project.md            # Project-specific context
-│   └── workflow/
-│       ├── state.json            # Current state and history
-│       ├── artifacts/
-│       │   ├── requirement_questions.md
-│       │   ├── requirements.md
-│       │   ├── design.md
-│       │   ├── plan.md
-│       │   ├── test_report.md
-│       │   └── review_summary.md
-│       ├── logs/                 # Phase execution logs
-│       └── feedback/             # PR review feedback per phase
+│   ├── workflow/
+│   │   ├── state.json            # Current state and history
+│   │   └── feedback/             # Ingested PR review comments per phase
 ├── CLAUDE.md                     # Generated context for Claude (gitignored)
 └── .claude/
     └── settings.json             # Hooks configuration (gitignored)
 ```
 
-A symlink is also created at `~/.sdlc/projects/<slug>` pointing to `.sdlc/` for multi-project support.
+Each phase's artifact lives on its own branch and is accessible via the GitHub PR.
+A symlink is also created at `~/.sdlc/projects/<slug>` pointing to `.sdlc/`.
 
 ---
 
@@ -389,8 +378,7 @@ Authenticate `gh` CLI and set `repo` in `spec.yaml`. The orchestrator will:
 |---------|-------------|
 | `sdlc init [source]` | Scaffold a project (new, GitHub repo, or local path) |
 | `sdlc status` | Show current workflow state and history |
-| `sdlc answer [--file PATH]` | Submit answers to requirement questions |
-| `sdlc state approve` | Advance past the current approval gate |
+| `sdlc state approve` | Advance past a gate manually (fallback when no GitHub) |
 | `sdlc relink [--all]` | Rebuild `~/.sdlc/projects/<slug>` symlink |
 
 ### Claude-facing commands (called during orchestration)
@@ -403,8 +391,10 @@ Authenticate `gh` CLI and set `repo` in `spec.yaml`. The orchestrator will:
 | `sdlc artifact read <name>` | Read a phase artifact |
 | `sdlc artifact list` | List available artifacts |
 | `sdlc notify <phase> <event>` | Send a Slack notification |
-| `sdlc github create-pr` | Create a GitHub PR for the current phase |
-| `sdlc github create-issue` | Create a GitHub issue |
+| `sdlc github pr-status <branch>` | Check if a phase PR is approved or merged |
+| `sdlc github ingest-feedback <branch> <phase>` | Pull PR review comments as feedback |
+| `sdlc github create-pr <branch> <phase>` | Open a PR for a phase branch |
+| `sdlc github create-issue <title> <body-file>` | Create a GitHub issue |
 | `sdlc tick acquire/release` | Prevent concurrent orchestration runs |
 
 ---
