@@ -1,5 +1,11 @@
 """
-State machine: 12 states, transitions, approval gates, and executable states.
+State machine: phases → stories → done.
+
+Flow:
+  requirement → design → plan → [story_in_progress → story_awaiting_review] × N → done
+
+Each story (STORY-NNN) is a self-contained unit: its own branch, PR, and approval gate.
+The implementation phase is replaced by per-story cycles so large projects split cleanly.
 """
 from __future__ import annotations
 
@@ -13,76 +19,64 @@ from sdlc_orchestrator.utils import sdlc_home
 
 
 class State(str, Enum):
-    DRAFT_REQUIREMENT            = "draft_requirement"
-    AWAITING_REQUIREMENT_ANSWER  = "awaiting_requirement_answer"
-    REQUIREMENT_IN_PROGRESS      = "requirement_in_progress"
+    REQUIREMENT_IN_PROGRESS        = "requirement_in_progress"
     REQUIREMENT_READY_FOR_APPROVAL = "requirement_ready_for_approval"
-    DESIGN_IN_PROGRESS           = "design_in_progress"
-    AWAITING_DESIGN_APPROVAL     = "awaiting_design_approval"
-    TASK_PLAN_IN_PROGRESS        = "task_plan_in_progress"
-    TASK_PLAN_READY              = "task_plan_ready"
-    IMPLEMENTATION_IN_PROGRESS   = "implementation_in_progress"
-    TEST_FAILURE_LOOP            = "test_failure_loop"
-    AWAITING_REVIEW              = "awaiting_review"
-    FEEDBACK_INCORPORATION       = "feedback_incorporation"
-    BLOCKED                      = "blocked"
-    DONE                         = "done"
+    DESIGN_IN_PROGRESS             = "design_in_progress"
+    AWAITING_DESIGN_APPROVAL       = "awaiting_design_approval"
+    TASK_PLAN_IN_PROGRESS          = "task_plan_in_progress"
+    TASK_PLAN_READY                = "task_plan_ready"
+    STORY_IN_PROGRESS              = "story_in_progress"
+    STORY_AWAITING_REVIEW          = "story_awaiting_review"
+    FEEDBACK_INCORPORATION         = "feedback_incorporation"
+    BLOCKED                        = "blocked"
+    DONE                           = "done"
 
 
 # Valid transitions: state → allowed next states
 TRANSITIONS: dict[State, list[State]] = {
-    State.DRAFT_REQUIREMENT:               [State.AWAITING_REQUIREMENT_ANSWER],
-    State.AWAITING_REQUIREMENT_ANSWER:     [State.REQUIREMENT_IN_PROGRESS],
     State.REQUIREMENT_IN_PROGRESS:         [State.REQUIREMENT_READY_FOR_APPROVAL],
     State.REQUIREMENT_READY_FOR_APPROVAL:  [State.DESIGN_IN_PROGRESS],
     State.DESIGN_IN_PROGRESS:             [State.AWAITING_DESIGN_APPROVAL],
     State.AWAITING_DESIGN_APPROVAL:        [State.TASK_PLAN_IN_PROGRESS],
     State.TASK_PLAN_IN_PROGRESS:           [State.TASK_PLAN_READY],
-    State.TASK_PLAN_READY:                 [State.IMPLEMENTATION_IN_PROGRESS],
-    State.IMPLEMENTATION_IN_PROGRESS:      [State.TEST_FAILURE_LOOP, State.AWAITING_REVIEW],
-    State.TEST_FAILURE_LOOP:               [State.AWAITING_REVIEW, State.BLOCKED],
-    State.AWAITING_REVIEW:                 [State.FEEDBACK_INCORPORATION, State.DONE],
-    State.FEEDBACK_INCORPORATION:          [State.DESIGN_IN_PROGRESS, State.TASK_PLAN_IN_PROGRESS,
-                                            State.IMPLEMENTATION_IN_PROGRESS],
-    State.BLOCKED:                         [State.DRAFT_REQUIREMENT, State.DESIGN_IN_PROGRESS,
-                                            State.TASK_PLAN_IN_PROGRESS, State.IMPLEMENTATION_IN_PROGRESS],
+    State.TASK_PLAN_READY:                 [State.STORY_IN_PROGRESS],
+    State.STORY_IN_PROGRESS:              [State.STORY_AWAITING_REVIEW, State.BLOCKED],
+    State.STORY_AWAITING_REVIEW:          [State.STORY_IN_PROGRESS, State.FEEDBACK_INCORPORATION, State.DONE],
+    State.FEEDBACK_INCORPORATION:          [State.REQUIREMENT_IN_PROGRESS, State.DESIGN_IN_PROGRESS,
+                                            State.TASK_PLAN_IN_PROGRESS, State.STORY_IN_PROGRESS],
+    State.BLOCKED:                         [State.REQUIREMENT_IN_PROGRESS, State.DESIGN_IN_PROGRESS,
+                                            State.TASK_PLAN_IN_PROGRESS, State.STORY_IN_PROGRESS],
     State.DONE:                            [],
 }
 
 # States where execution is paused waiting for a human action
 APPROVAL_STATES: set[State] = {
-    State.AWAITING_REQUIREMENT_ANSWER,
     State.REQUIREMENT_READY_FOR_APPROVAL,
     State.AWAITING_DESIGN_APPROVAL,
     State.TASK_PLAN_READY,
-    State.AWAITING_REVIEW,
+    State.STORY_AWAITING_REVIEW,
     State.BLOCKED,
 }
 
 # States where the agent should run
 EXECUTABLE_STATES: set[State] = {
-    State.DRAFT_REQUIREMENT,
     State.REQUIREMENT_IN_PROGRESS,
     State.DESIGN_IN_PROGRESS,
     State.TASK_PLAN_IN_PROGRESS,
-    State.IMPLEMENTATION_IN_PROGRESS,
-    State.TEST_FAILURE_LOOP,
+    State.STORY_IN_PROGRESS,
     State.FEEDBACK_INCORPORATION,
 }
 
 # Human-readable labels for display
 STATE_LABELS: dict[State, str] = {
-    State.DRAFT_REQUIREMENT:               "Drafting requirement questions",
-    State.AWAITING_REQUIREMENT_ANSWER:     "Awaiting your answers to clarifying questions",
-    State.REQUIREMENT_IN_PROGRESS:         "Building structured requirements",
-    State.REQUIREMENT_READY_FOR_APPROVAL:  "Requirements ready — awaiting your approval",
+    State.REQUIREMENT_IN_PROGRESS:         "Drafting requirements",
+    State.REQUIREMENT_READY_FOR_APPROVAL:  "Requirements PR open — awaiting your approval",
     State.DESIGN_IN_PROGRESS:             "Designing system architecture",
     State.AWAITING_DESIGN_APPROVAL:        "Design ready — awaiting your approval",
-    State.TASK_PLAN_IN_PROGRESS:           "Breaking design into tasks",
+    State.TASK_PLAN_IN_PROGRESS:           "Breaking design into stories and tasks",
     State.TASK_PLAN_READY:                 "Task plan ready — awaiting your approval",
-    State.IMPLEMENTATION_IN_PROGRESS:      "Implementing features",
-    State.TEST_FAILURE_LOOP:               "Fixing failing tests",
-    State.AWAITING_REVIEW:                 "Ready for review — awaiting your approval",
+    State.STORY_IN_PROGRESS:              "Implementing story",
+    State.STORY_AWAITING_REVIEW:          "Story PR open — awaiting your approval",
     State.FEEDBACK_INCORPORATION:          "Incorporating feedback",
     State.BLOCKED:                         "BLOCKED — needs human intervention",
     State.DONE:                            "Complete",
@@ -113,11 +107,7 @@ class WorkflowState:
 
     def _load(self) -> dict:
         if self.path.exists():
-            data = json.loads(self.path.read_text())
-            # Migrate old schema (phase/phase_state → state)
-            if "state" not in data and "phase" in data:
-                data = self._defaults()
-            return data
+            return json.loads(self.path.read_text())
         return self._defaults()
 
     def save(self) -> None:
@@ -127,16 +117,20 @@ class WorkflowState:
     @staticmethod
     def _defaults() -> dict:
         return {
-            "state": State.DRAFT_REQUIREMENT.value,
+            "state": State.REQUIREMENT_IN_PROGRESS.value,
             "retry_count": 0,
             "approval_needed": False,
             "blocked_reason": None,
             "current_branch": "main",
+            # Story tracking (implementation phase)
+            "current_story": None,           # STORY-NNN currently being worked
+            "completed_stories": [],         # [STORY-001, STORY-002, ...] approved stories
             # GitHub project board (Projects v2)
-            "github_project": None,        # {number, node_id, status_field_id, status_options}
-            "github_epic_issue": None,     # epic issue number
-            "github_phase_items": {},      # {phase: {issue, item_id}} — board items per phase
-            "github_task_items": {},       # {TASK-001: {issue, item_id}} — per implementation task
+            "github_project": None,          # {number, node_id, status_field_id, status_options}
+            "github_epic_issue": None,       # epic issue number
+            "github_phase_items": {},        # {phase: {issue, item_id}} — board items per phase
+            "github_story_items": {},        # {STORY-001: {issue, item_id}} — per user story
+            "github_task_items": {},         # {TASK-001: {issue, item_id}} — per task
             "artifacts": {
                 "requirement_questions": None,
                 "requirements": None,
@@ -172,6 +166,14 @@ class WorkflowState:
         return self._data.get("artifacts", {})
 
     @property
+    def current_story(self) -> Optional[str]:
+        return self._data.get("current_story")
+
+    @property
+    def completed_stories(self) -> list:
+        return self._data.get("completed_stories", [])
+
+    @property
     def github_project(self) -> Optional[dict]:
         return self._data.get("github_project")
 
@@ -182,6 +184,10 @@ class WorkflowState:
     @property
     def github_phase_items(self) -> dict:
         return self._data.get("github_phase_items", {})
+
+    @property
+    def github_story_items(self) -> dict:
+        return self._data.get("github_story_items", {})
 
     @property
     def github_task_items(self) -> dict:
@@ -212,11 +218,10 @@ class WorkflowState:
         self._push_history(self.state)
         self._data["state"] = new_state.value
         self._data["approval_needed"] = new_state in APPROVAL_STATES
-        if new_state not in (State.TEST_FAILURE_LOOP, State.FEEDBACK_INCORPORATION):
+        if new_state != State.FEEDBACK_INCORPORATION:
             self._data["retry_count"] = 0
         self.save()
         if new_state in APPROVAL_STATES and self._notifier:
-            # Determine the most relevant artifact path for the notification
             artifact_path = self._latest_artifact_path()
             self._notifier(new_state, artifact_path)
 
@@ -230,6 +235,19 @@ class WorkflowState:
 
     def mark_artifact(self, key: str, path: str) -> None:
         self._data.setdefault("artifacts", {})[key] = path
+        self.save()
+
+    def set_current_story(self, story_id: str) -> None:
+        """Set the story currently being worked on."""
+        self._data["current_story"] = story_id
+        self.save()
+
+    def complete_current_story(self) -> None:
+        """Mark current story as complete and clear it."""
+        story = self._data.get("current_story")
+        if story and story not in self._data.setdefault("completed_stories", []):
+            self._data["completed_stories"].append(story)
+        self._data["current_story"] = None
         self.save()
 
     def set_github(self, epic_issue: Optional[int] = None,
@@ -248,6 +266,11 @@ class WorkflowState:
         self._data.setdefault("github_phase_items", {})[phase] = {
             "issue": issue, "item_id": item_id,
         }
+        self.save()
+
+    def set_story_items(self, story_items: dict) -> None:
+        """Merge story_items ({STORY-001: {issue, item_id}}) into state."""
+        self._data.setdefault("github_story_items", {}).update(story_items)
         self.save()
 
     def set_task_items(self, task_items: dict) -> None:

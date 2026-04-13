@@ -62,6 +62,9 @@ These `sdlc` commands are your state and integration layer — call them via Bas
 | `sdlc github setup` | Idempotent full GitHub setup: labels, board, workflows, phase issues |
 | `sdlc github sync-board` | Move active phase issue to correct board column (also adds missing items to board, closes all on done) |
 | `sdlc github close-phase-issue <phase>` | Close the GitHub issue for a completed phase |
+| `sdlc story start <STORY-NNN>` | Set active story, transition to story_in_progress |
+| `sdlc story complete` | Mark story done; prints next story or all_complete |
+| `sdlc github create-story-issues` | Create one GitHub issue per STORY-NNN in plan.md |
 | `sdlc github create-task-issues` | Create one GitHub issue per TASK-NNN in plan.md |
 | `sdlc tick release` | Release tick lock (LAST THING, EVERY TIME) |
 
@@ -89,64 +92,74 @@ reviewable via PR, and persistent outside the local machine.
 
 ```
 0. sdlc tick acquire              — prevent concurrent runs (exit if locked)
-0b. sdlc github setup            — idempotent: labels, board, phase issues
-1. sdlc state get                 — where am I?
+0b. sdlc github setup            — idempotent: labels, board, epic, phase issues
+1. sdlc state get                 — where am I? (read current_story, pending_stories)
 2. state == done?                 — sdlc tick release, stop, congratulate
 3. state is approval gate?
-     a. sdlc github pr-status sdlc/<phase>
-     b. ALWAYS ingest comments regardless of status:
-          → sdlc github ingest-feedback sdlc/<phase> <phase>
-     c. status == approved or merged?
-          → sdlc github close-phase-issue <phase>   ← close completed phase issue
-          → sdlc state set <next-state>
-          → sdlc github sync-board                  ← move next phase issue on board
-          → continue to step 4
-     d. status == open?
-          → check if .sdlc/feedback/<phase>.md has new content
-          → if new comments exist: update the artifact to address them,
-            commit and push to the same branch, then stop
-          → if no new comments: remind human what to review and where the PR is
-          → sdlc tick release, stop
-4. resume check                   — read existing artifact; skip completed work
-5. execute current phase          — write artifact to docs/sdlc/<phase>.md
-6. commit artifact on sdlc/<phase> branch
-7. push branch + open PR with full artifact as body
-8. sdlc state set <approval-gate> — Slack fires automatically
-9. sdlc github sync-board         — move phase issue to "Awaiting Review"
-10. sdlc tick release             — always release before stopping
-11. stop (next /loop tick will poll PR status and continue)
+     PRE-PLAN PHASES (requirement / design / plan):
+       a. sdlc github pr-status sdlc/<phase>
+       b. sdlc github ingest-feedback sdlc/<phase> <phase>
+       c. approved/merged?
+            → sdlc github close-phase-issue <phase>
+            → sdlc state set <next-state>
+            → sdlc github sync-board
+            → continue to step 4
+       d. open? → check feedback, address or remind, sdlc tick release, stop
+
+     STORY GATE (story_awaiting_review):
+       a. sdlc github pr-status sdlc/<current_story>   (e.g. sdlc/story-001)
+       b. sdlc github ingest-feedback sdlc/<current_story> <current_story>
+       c. approved/merged?
+            → sdlc story complete       — prints "next: STORY-NNN" or "all_complete"
+            → sdlc github sync-board
+            → if next story: sdlc story start <next>   → continue to step 4
+            → if all_complete: sdlc state set done → sdlc github sync-board → stop
+       d. open? → check feedback, address or remind, sdlc tick release, stop
+
+4. resume check                   — read existing artifact or story progress
+5. execute current phase/story    — see phase instructions below
+6. commit on phase/story branch
+7. push + open PR
+8. sdlc state set <approval-gate>
+9. sdlc github sync-board
+10. sdlc tick release
+11. stop
 ```
 
-Never skip a step. Never advance state before the phase work is complete and
-committed.
+Never skip a step. Never advance state before work is complete and committed.
 
 ---
 
 ## State machine
 
+All pre-plan phases follow the same pattern: `phase_in_progress` → PR →
+`phase_awaiting_approval` → approve → next phase.
+
 ```
-draft_requirement
-  → [you: generate clarifying questions, put in PR body]
-awaiting_requirement_answer          ← poll sdlc/requirements PR for approval
-  → [you: build structured requirements from PR comments]
-requirement_ready_for_approval       ← poll sdlc/requirements PR for approval
+requirement_in_progress
+  → [you: write docs/sdlc/requirements.md, open PR]
+requirement_ready_for_approval       ← poll sdlc/requirements PR
   → [you: system design]
 design_in_progress
   → [you: produces docs/sdlc/design.md]
-awaiting_design_approval             ← poll sdlc/design PR for approval
-  → [you: task breakdown]
+awaiting_design_approval             ← poll sdlc/design PR
+  → [you: task breakdown into STORY-NNN / TASK-NNN]
 task_plan_in_progress
   → [you: produces docs/sdlc/plan.md]
-task_plan_ready                      ← poll sdlc/plan PR for approval
-  → [you: implement]
-implementation_in_progress
-  → [you: code + tests on sdlc/implementation]
-test_failure_loop                    ← auto-retry up to 3×, then BLOCKED
-  → [you: fix failing tests]
-awaiting_review                      ← poll sdlc/implementation PR for approval
-  → [you or human feedback loop]
+task_plan_ready                      ← poll sdlc/plan PR
+  → [you: implement stories one by one]
+
+  ┌─── per-story cycle (repeats for each STORY-NNN) ───────────────┐
+  │  story_in_progress                                              │
+  │    → [you: implement tasks, run tests, commit on sdlc/story-NNN]│
+  │  story_awaiting_review          ← poll sdlc/story-NNN PR       │
+  │    → approved + more stories:  start next story                 │
+  │    → approved + last story:    done                             │
+  │    → feedback: feedback_incorporation → story_in_progress       │
+  └─────────────────────────────────────────────────────────────────┘
+
 feedback_incorporation
-  → [loop back to appropriate phase]
+  → [loop back to design / plan / story_in_progress]
 done
 ```
 
@@ -158,66 +171,70 @@ tick check again.
 
 ## Phase execution instructions
 
-### state: draft_requirement
+Each pre-plan phase follows the same pattern:
+1. Write artifact → commit on `sdlc/<phase>` branch → open PR → set approval gate state
+2. On next tick: poll PR → ingest feedback → if approved advance, if open address or wait
+
+---
+
+### state: requirement_in_progress
 
 You are a Business Analyst. Read `.sdlc/spec.yaml` and `CLAUDE.md`.
 
 1. Checkout branch: `git checkout -b sdlc/requirements` (or switch if exists)
-2. Create `docs/sdlc/` directory
-3. Write `docs/sdlc/requirements.md` with:
-   - 5–10 clarifying questions, each with an empty `**Answer:**` field
-   - A clear instruction at the top: "Fill in each Answer field and approve this PR to continue"
+2. Create `docs/sdlc/` directory if needed
+3. Write `docs/sdlc/requirements.md` covering:
+   - Goals and non-goals (from spec.yaml)
+   - Functional requirements (numbered, with acceptance criteria)
+   - Non-functional requirements (performance, security, scalability)
+   - Constraints, assumptions, open questions
+   - Success metrics / definition of done
+   - If spec is sparse, include a section "**Open questions for review**" listing
+     anything ambiguous — the human can answer in PR comments
 4. Commit and push:
-   ```
+   ```bash
    git add docs/sdlc/requirements.md
-   git commit -m "sdlc(requirement): draft clarifying questions"
+   git commit -m "sdlc(requirement): draft requirements"
    git push -u origin sdlc/requirements
    ```
 5. Open PR:
-   ```
+   ```bash
    sdlc github create-pr sdlc/requirements requirement
    ```
-   The PR body should contain the full questions file so the human can answer
-   inline via PR review comments or by editing the file on the branch.
-6. Run: `sdlc state set awaiting_requirement_answer`
+6. Run:
+   ```bash
+   sdlc state set requirement_ready_for_approval
+   sdlc github sync-board
+   ```
 7. Tell the human:
    ```
-   ⏸ Clarifying questions drafted.
+   ⏸ Requirements drafted.
 
-   Review and answer: <PR URL>
+   Review PR: <PR URL>
 
-   Fill in each Answer field in the PR (edit the file or leave review comments),
-   then approve the PR. I'll pick up answers on the next tick.
+   Edit the file on the branch or leave PR review comments with corrections.
+   Approve the PR when ready — I'll pick up any comments and advance.
    ```
 
 ---
 
-### state: awaiting_requirement_answer / requirement_ready_for_approval
+### state: requirement_ready_for_approval
 
 ```bash
 sdlc github pr-status sdlc/requirements
 sdlc github ingest-feedback sdlc/requirements requirement
 ```
 
-- **approved or merged** → read `.sdlc/feedback/requirement.md` and the latest
-  `docs/sdlc/requirements.md`. Build the full structured requirements and
-  overwrite `docs/sdlc/requirements.md` with:
-  - Goals and non-goals
-  - Functional requirements (numbered, with acceptance criteria)
-  - Non-functional requirements
-  - Constraints, assumptions, risks
-  - Success metrics / definition of done
-
-  Commit and push, then:
+- **approved or merged** → apply any feedback from `.sdlc/feedback/requirement.md`
+  to `docs/sdlc/requirements.md`, commit and push, then:
   ```bash
   sdlc github close-phase-issue requirement
-  sdlc state set requirement_ready_for_approval
+  sdlc state set design_in_progress
   sdlc github sync-board
   ```
 
 - **open** → check `.sdlc/feedback/requirement.md` for new comments.
-  If new comments exist: address them by updating `docs/sdlc/requirements.md`,
-  commit and push to `sdlc/requirements`, then stop.
+  If new comments exist: update `docs/sdlc/requirements.md`, commit and push, stop.
   If no new comments: remind the human to review the PR and stop.
 
 ---
@@ -275,8 +292,10 @@ sdlc github ingest-feedback sdlc/design design
 You are a Project Manager. Read `docs/sdlc/design.md` and `docs/sdlc/requirements.md`.
 
 1. Checkout branch: `git checkout -b sdlc/plan` (or switch if exists)
-2. Write `docs/sdlc/plan.md` — ordered task list:
+2. Write `docs/sdlc/plan.md` — stories grouping tasks:
    ```
+   # STORY-001: <user-facing capability>
+
    ## TASK-001: <title>
    - Size: S | M | L
    - Dependencies: none | TASK-NNN
@@ -309,78 +328,86 @@ sdlc github ingest-feedback sdlc/plan planning
   to `docs/sdlc/plan.md`, commit, then:
   ```bash
   sdlc github close-phase-issue planning
+  sdlc github create-story-issues        # one issue per STORY-NNN → board
   sdlc github create-task-issues         # one issue per TASK-NNN → board
-  sdlc state set implementation_in_progress
+  sdlc github sync-board
+  ```
+  Then pick the first pending story and start it:
+  ```bash
+  sdlc state get                         # read pending_stories
+  sdlc story start STORY-001             # sets current_story, → story_in_progress
   sdlc github sync-board
   ```
 
 - **open** → check `.sdlc/feedback/planning.md` for new comments.
-  If new comments exist: address them by updating `docs/sdlc/plan.md`,
-  commit and push to `sdlc/plan`, then stop.
+  If new comments exist: update `docs/sdlc/plan.md`, commit and push to `sdlc/plan`, stop.
   If no new comments: remind the human to review the PR and stop.
 
 ---
 
-### state: implementation_in_progress
+### state: story_in_progress
 
-You are a Senior Developer. Checkout `sdlc/implementation` branch (create from main
-if it doesn't exist). Read `docs/sdlc/plan.md` from the `sdlc/plan` branch.
+You are a Senior Developer. One story at a time — read `current_story` from
+`sdlc state get`.
 
-For each `[ ] pending` task in dependency order:
-1. Implement following `docs/sdlc/design.md` exactly
-2. Write unit tests (TDD preferred)
-3. Run tests — fix all failures before moving on
-4. Commit: `git add <files> && git commit -m "feat(TASK-NNN): <title>"`
-5. Mark done in plan.md: `[x] done`
-
-When all tasks are `[x] done`:
-- Run: `sdlc state set test_failure_loop`
-
----
-
-### state: test_failure_loop
-
-You are a QA Engineer.
-
-1. Run the full test suite
-2. Fix every failing test — do not skip or weaken assertions
-3. Run linting and type checks — fix all errors
-4. Verify every acceptance criterion from `docs/sdlc/requirements.md` has test coverage
-5. Write a test report (commit to `sdlc/implementation` as `docs/sdlc/test_report.md`)
-
-If all pass:
-- Push `sdlc/implementation` and open PR:
-  ```
-  sdlc github create-pr sdlc/implementation review
-  ```
-- Run: `sdlc state set awaiting_review`
-
-If unfixable after 3 attempts:
-- Run: `sdlc state set blocked`
-- Explain the blocker clearly
+1. Read the story's tasks from `docs/sdlc/plan.md` (tasks grouped under this story)
+2. Checkout branch: `git checkout -b sdlc/<current_story>` (e.g. `sdlc/story-001`)
+   Create from main if it doesn't exist; switch to it if it does.
+3. For each `[ ] pending` task under this story, in dependency order:
+   - Implement following `docs/sdlc/design.md` exactly
+   - Write unit tests (TDD preferred)
+   - Run tests — fix all failures before moving on
+   - Commit: `git add <files> && git commit -m "feat(TASK-NNN): <title>"`
+   - Mark done in plan.md: `[x] done` (commit this too)
+4. Run the full test suite — fix every failure; do not skip or weaken assertions
+5. Run linting and type checks — fix all errors
+6. If tests still fail after 3 attempts: `sdlc state set blocked` and explain clearly
+7. Push branch and open PR:
+   ```bash
+   sdlc github create-pr sdlc/<current_story> <current_story>
+   ```
+8. Transition:
+   ```bash
+   sdlc state set story_awaiting_review
+   sdlc github sync-board
+   sdlc tick release
+   ```
 
 ---
 
-### state: awaiting_review
+### state: story_awaiting_review
 
 ```bash
-sdlc github pr-status sdlc/implementation
-sdlc github ingest-feedback sdlc/implementation review
+sdlc state get                                              # get current_story
+sdlc github pr-status sdlc/<current_story>
+sdlc github ingest-feedback sdlc/<current_story> <current_story>
 ```
 
-- **approved or merged** → check `.sdlc/feedback/review.md`:
-  If feedback exists → `sdlc state set feedback_incorporation`
-  If no feedback →
+- **approved or merged:**
   ```bash
-  sdlc github close-phase-issue review
-  sdlc state set done
-  sdlc github sync-board   ← closes all issues and moves board to Done
+  sdlc story complete       # prints "next: STORY-NNN" or "all_complete"
+  sdlc github sync-board
   ```
+  - `next: STORY-NNN` → start the next story:
+    ```bash
+    sdlc story start STORY-NNN
+    sdlc github sync-board
+    ```
+    Continue to `story_in_progress` instructions above.
+  - `all_complete` → close out:
+    ```bash
+    sdlc github close-phase-issue review
+    sdlc state set done
+    sdlc github sync-board    ← closes all issues, moves board to Done
+    ```
 
-- **open** → check `.sdlc/feedback/review.md` for new comments.
-  If new comments exist: address them on the `sdlc/implementation` branch,
-  commit and push, then stop.
-  If no new comments: remind the human to review the PR and stop.
+- **open** → check `.sdlc/feedback/<current_story>.md` for new comments.
+  If new comments exist: address them on `sdlc/<current_story>` branch,
+  commit and push, then:
+  ```bash
+  sdlc state set feedback_incorporation
+  ```
+  If no new comments: remind the human where the PR is and stop.
 
 ---
 
@@ -389,21 +416,21 @@ sdlc github ingest-feedback sdlc/implementation review
 You are a Senior Developer incorporating review feedback.
 
 1. Read all files in `.sdlc/feedback/`
-2. Categorise: `[design]` `[plan]` `[code]` `[docs]`
+2. Categorise: `[design]` `[plan]` `[story]` `[docs]`
 3. Apply every change
 4. Commit each change: `fix(feedback): <what changed>`
 5. Move applied files to `.sdlc/feedback/applied/`
 6. Based on what changed:
    - Design changed → `sdlc state set design_in_progress`
    - Plan changed   → `sdlc state set task_plan_in_progress`
-   - Code only      → `sdlc state set implementation_in_progress`
+   - Story/code     → `sdlc story start <current_story>` (re-enters story_in_progress)
 
 ---
 
 ## At every approval gate — say this
 
 ```
-⏸  [Phase] complete. Waiting for PR approval.
+⏸  [Phase / Story] complete. Waiting for PR approval.
 
 What was produced:
   <1–3 bullet summary>
@@ -418,6 +445,8 @@ No GitHub? Run:
   sdlc state approve
   (then /sdlc-orchestrate to resume)
 ```
+
+For story gates, include story progress: "Story 2 of 5 complete."
 
 A Slack notification has been sent automatically.
 
@@ -435,3 +464,4 @@ A Slack notification has been sent automatically.
 - Always call `sdlc tick release` before stopping (even on error)
 - If no GitHub repo is configured, fall back to writing artifacts to
   `.sdlc/workflow/artifacts/` and tell the human to run `sdlc state approve`
+- Never start a second story while the current story's PR is still open

@@ -21,6 +21,14 @@ the resulting `.sdlc/memory/project.md`.
 
 ---
 
+## Step 1b — Check for existing spec
+
+Read `.sdlc/spec.yaml` if it exists. If fields like `description`, `tech_stack`,
+or `repo` are already filled in, use them as defaults and only ask for what's
+missing. Never re-ask for information that's already complete.
+
+---
+
 ## Step 2 — Interview the developer
 
 Use `AskUserQuestion` to gather the information below. Do NOT ask all questions

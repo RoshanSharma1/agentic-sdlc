@@ -101,7 +101,7 @@ def create_project_board(project_name: str, repo: str) -> Optional[dict]:
         r = _gh(
             "project", "create",
             "--owner", owner,
-            "--title", f"{project_name} SDLC",
+            "--title", project_name,
             "--format", "json",
         )
         data = json.loads(r.stdout)
@@ -377,7 +377,57 @@ def close_issue(repo: str, issue_number: int, comment: str = "") -> None:
         pass
 
 
-# ── Task issues from plan.md ──────────────────────────────────────────────────
+# ── Story and task issues from plan.md ───────────────────────────────────────
+
+def parse_plan_stories(plan_text: str) -> list[dict]:
+    """
+    Parse plan.md into story dicts: {id, title, task_ids}.
+    Expects: # STORY-NNN: Title  with ## TASK-NNN: ... entries beneath each story.
+    """
+    stories = []
+    current: Optional[dict] = None
+    for line in plan_text.splitlines():
+        story_m = re.match(r"^#\s+(STORY-\d+):\s+(.+)", line)
+        task_m = re.match(r"^##\s+(TASK-\d+):", line)
+        if story_m:
+            if current:
+                stories.append(current)
+            current = {"id": story_m.group(1), "title": story_m.group(2).strip(), "task_ids": []}
+        elif task_m and current:
+            current["task_ids"].append(task_m.group(1))
+    if current:
+        stories.append(current)
+    return stories
+
+
+def create_story_issues(
+    repo: str,
+    stories: list[dict],
+    project_info: Optional[dict] = None,
+    epic_issue: Optional[int] = None,
+) -> dict:
+    """
+    Create a GitHub issue per story and add to the project board.
+    Returns {STORY-001: {number, item_id}, ...}
+    """
+    result = {}
+    for story in stories:
+        task_list = "\n".join(f"- [ ] {tid}" for tid in story["task_ids"]) or "(no tasks)"
+        body = f"## Tasks\n{task_list}"
+        if epic_issue:
+            body += f"\n\nPart of #{epic_issue}"
+
+        info = create_phase_issue(
+            repo=repo,
+            phase="implementation",
+            title=f"{story['id']}: {story['title']}",
+            body=body,
+            project_info=project_info,
+        )
+        if info.get("number"):
+            result[story["id"]] = {"number": info["number"], "item_id": info.get("item_id", "")}
+    return result
+
 
 def parse_plan_tasks(plan_text: str) -> list[dict]:
     """

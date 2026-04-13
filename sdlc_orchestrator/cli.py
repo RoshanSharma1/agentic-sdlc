@@ -3,7 +3,6 @@ sdlc CLI — human tools and Claude's state/integration toolbox.
 
 Human-facing:
   sdlc init [source]        scaffold a project (new or existing)
-  sdlc answer [--file]      submit answers to requirement questions
   sdlc status               show current state in readable form
   sdlc relink [--all]       rebuild ~/.sdlc/projects/<slug> symlink
 
@@ -19,7 +18,9 @@ Claude-facing (called via Bash tool during /sdlc-orchestrate):
   sdlc notify <phase> <event>       send Slack notification
   sdlc github create-pr <branch> <phase>        open PR
   sdlc github create-issue <title> <body-file>  create issue
-  sdlc github create-board                      create project board
+  sdlc story start <STORY-NNN>          set active story and begin implementation
+  sdlc story complete                   mark story approved, advance to next or done
+  sdlc github create-story-issues       create one issue per STORY-NNN in plan.md
 
   sdlc tick acquire         acquire tick lock (prevent concurrent runs)
   sdlc tick release         release tick lock
@@ -52,7 +53,7 @@ console = Console()
 def _require_project() -> Path:
     d = find_project_dir()
     if not d:
-        console.print("[red]No SDLC project found. Run [bold]sdlc init[/bold] first.[/red]")
+        console.print("[red]No SDLC project found. Run [bold]sdlc init .[/bold] first.[/red]")
         sys.exit(1)
     return d
 
@@ -174,21 +175,7 @@ def _set_initial_state(project_dir: Path, phase: str) -> None:
     wf.save()
 
 def _detect_starting_phase(project_dir: Path) -> str:
-    choices = ["requirement", "design", "planning", "implementation", "validation", "review"]
-    has_src = any(
-        f for f in project_dir.iterdir()
-        if f.name not in {".git", ".sdlc", ".claude", "CLAUDE.md"}
-    )
-    if not has_src:
-        return "requirement"
-    console.print("\n  [bold]Which phase to start from?[/bold]")
-    for i, c in enumerate(choices, 1):
-        console.print(f"    {i}. {c}")
-    val = click.prompt("  Number", default="1")
-    try:
-        return choices[int(val) - 1]
-    except (ValueError, IndexError):
-        return "requirement"
+    return "requirement"
 
 def _setup_github_board(project_dir: Path, spec: dict) -> None:
     from sdlc_orchestrator.integrations import github
@@ -343,24 +330,10 @@ def init(source, upgrade_skills):
         _setup_local(Path(source).resolve(), upgrade_skills)
 
 
-@cli.command(hidden=True, deprecated=True)
-@click.argument("source", required=False)
-@click.option("--upgrade-skills", is_flag=True)
-@click.pass_context
-def setup(ctx, source, upgrade_skills):
-    """Deprecated alias for `sdlc init`."""
-    console.print("[yellow]`sdlc setup` is deprecated — use `sdlc init` instead.[/yellow]")
-    ctx.invoke(init, source=source, upgrade_skills=upgrade_skills)
-
 
 def _setup_new(upgrade_skills: bool) -> None:
     console.print(Panel("[bold]New project setup[/bold]", style="blue"))
-    name        = click.prompt("Project name")
-    description = click.prompt("Description")
-    stack       = click.prompt("Tech stack (e.g. Python/FastAPI, Node.js)")
-    repo        = click.prompt("GitHub repo owner/name (or Enter to skip)", default="")
-    slack       = click.prompt("Slack webhook URL (or Enter to skip)", default="", hide_input=True)
-
+    name = click.prompt("Project name (used for directory name)")
     slug = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")
     project_dir = Path.cwd() / slug
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -370,10 +343,10 @@ def _setup_new(upgrade_skills: bool) -> None:
 
     spec = {
         "project_name": name,
-        "description": description,
-        "tech_stack": stack,
-        "repo": repo,
-        "slack_webhook": slack,
+        "description": "",
+        "tech_stack": "",
+        "repo": "",
+        "slack_webhook": "",
         "executor": "claude-code",
     }
     _common_setup(project_dir, spec, is_new=True, upgrade_skills=upgrade_skills)
@@ -393,27 +366,17 @@ def _setup_local(project_dir: Path, upgrade_skills: bool) -> None:
         style="blue",
     ))
 
-    # Load or build spec
+    # Load or build spec — never prompt, Claude handles this in /sdlc-setup
     existing = project_dir / ".sdlc" / "spec.yaml"
-    legacy   = project_dir / "spec.yaml"
     if existing.exists():
         spec = yaml.safe_load(existing.read_text()) or {}
-    elif legacy.exists():
-        spec = yaml.safe_load(legacy.read_text()) or {}
     else:
-        name    = click.prompt("Project name", default=project_dir.name)
-        stack   = click.prompt("Tech stack", default=_detect_stack(project_dir) or "")
-        repo    = click.prompt("GitHub repo owner/name", default=_detect_remote_repo(project_dir))
-        obj_key = "description" if is_new else "objective"
-        obj_lbl = "Description" if is_new else "Objective (what work are we doing?)"
-        obj     = click.prompt(obj_lbl)
-        slack   = click.prompt("Slack webhook URL (or Enter to skip)", default="", hide_input=True)
-        spec    = {
-            "project_name": name,
-            obj_key: obj,
-            "tech_stack": stack,
-            "repo": repo,
-            "slack_webhook": slack,
+        spec = {
+            "project_name": project_dir.name,
+            "description": "",
+            "tech_stack": _detect_stack(project_dir),
+            "repo": _detect_remote_repo(project_dir),
+            "slack_webhook": "",
             "executor": "claude-code",
         }
 
@@ -449,6 +412,14 @@ def state_get():
     click.echo(f"project: {spec.get('project_name', project_dir.name)}")
     click.echo(f"branch: {wf._data.get('current_branch', 'main')}")
     click.echo(f"allowed_transitions: {', '.join(allowed_next)}")
+    if wf.current_story:
+        click.echo(f"current_story: {wf.current_story}")
+    if wf.completed_stories:
+        click.echo(f"completed_stories: {', '.join(wf.completed_stories)}")
+    story_ids = sorted(wf.github_story_items.keys())
+    pending = [s for s in story_ids if s not in wf.completed_stories]
+    if pending:
+        click.echo(f"pending_stories: {', '.join(pending)}")
     if wf.blocked_reason:
         click.echo(f"blocked_reason: {wf.blocked_reason}")
     if artifacts:
@@ -494,12 +465,11 @@ def state_approve():
         sys.exit(1)
 
     NEXT: dict[State, State] = {
-        State.AWAITING_REQUIREMENT_ANSWER:    State.REQUIREMENT_IN_PROGRESS,
         State.REQUIREMENT_READY_FOR_APPROVAL: State.DESIGN_IN_PROGRESS,
         State.AWAITING_DESIGN_APPROVAL:       State.TASK_PLAN_IN_PROGRESS,
-        State.TASK_PLAN_READY:                State.IMPLEMENTATION_IN_PROGRESS,
-        State.AWAITING_REVIEW:                State.DONE,
-        State.BLOCKED:                        State.DRAFT_REQUIREMENT,
+        State.TASK_PLAN_READY:                State.STORY_IN_PROGRESS,
+        State.STORY_AWAITING_REVIEW:          State.STORY_IN_PROGRESS,
+        State.BLOCKED:                        State.REQUIREMENT_IN_PROGRESS,
     }
     next_state = NEXT[wf.state]
     wf.transition(next_state)
@@ -550,6 +520,61 @@ def artifact_list():
     for f in sorted(artifacts_dir.glob("*.md")):
         size = f.stat().st_size
         click.echo(f"  {f.stem:30}  {size:>6} bytes")
+
+
+# ── sdlc story (Claude-facing) ───────────────────────────────────────────────
+
+@cli.group()
+def story():
+    """Manage per-story progress during the implementation phase."""
+    pass
+
+
+@story.command("start")
+@click.argument("story_id")
+def story_start(story_id):
+    """Set the active story and transition to story_in_progress.
+
+    Claude calls this when beginning work on a new story.
+    """
+    project_dir = _require_project()
+    wf = _make_workflow_state(project_dir)
+    wf.set_current_story(story_id)
+    if wf.state != State.STORY_IN_PROGRESS:
+        try:
+            wf.transition(State.STORY_IN_PROGRESS)
+        except ValueError:
+            wf._data["state"] = State.STORY_IN_PROGRESS.value
+            wf._data["approval_needed"] = False
+            wf.save()
+    click.echo(f"started: {story_id}")
+
+
+@story.command("complete")
+def story_complete():
+    """Mark the current story as approved and advance to the next story or done.
+
+    Claude calls this after a story PR is approved. Prints 'next: STORY-NNN'
+    if more stories remain, or 'all_complete' when the last story is done.
+    """
+    project_dir = _require_project()
+    wf = _make_workflow_state(project_dir)
+    current = wf.current_story
+    if not current:
+        click.echo("error: no current_story set", err=True)
+        sys.exit(1)
+
+    wf.complete_current_story()
+
+    # Determine pending stories from board items
+    all_stories = sorted(wf.github_story_items.keys())
+    pending = [s for s in all_stories if s not in wf.completed_stories]
+
+    if pending:
+        next_story = pending[0]
+        click.echo(f"next: {next_story}")
+    else:
+        click.echo("all_complete")
 
 
 # ── sdlc notify (Claude-facing) ───────────────────────────────────────────────
@@ -717,7 +742,21 @@ def github_setup():
         else:
             console.print("  [dim]Workflows may already be enabled or require manual setup in GitHub UI.[/dim]")
 
-    # 4. Phase issues
+    # 4. Epic issue
+    if wf.github_epic_issue:
+        console.print(f"  [dim]Epic #{wf.github_epic_issue} already exists — skipped[/dim]")
+    else:
+        console.print("  Creating epic issue...")
+        spec_desc = spec.get("description", "")
+        epic_body = f"**{project_name}**\n\n{spec_desc}\n\nThis epic tracks all SDLC phases for this project."
+        epic_number = gh.create_epic(repo, project_name, epic_body)
+        if epic_number:
+            wf.set_github(epic_issue=epic_number)
+            console.print(f"  [green]✓[/green] Epic #{epic_number}")
+        else:
+            console.print("  [yellow]Epic creation failed — continuing[/yellow]")
+
+    # 5. Phase issues
     console.print("  Creating phase issues...")
     phases = [
         ("requirement",    f"[sdlc:requirement] Requirements"),
@@ -757,19 +796,15 @@ def github_sync_board():
     from sdlc_orchestrator.integrations import github as gh
 
     # State → (board status, phase whose issue to move)
+    # Story states are handled separately below using current_story.
     STATE_BOARD: dict[str, tuple[str, str]] = {
-        "draft_requirement":              ("In Progress",     "requirement"),
-        "awaiting_requirement_answer":    ("Awaiting Review", "requirement"),
         "requirement_in_progress":        ("In Progress",     "requirement"),
         "requirement_ready_for_approval": ("Awaiting Review", "requirement"),
         "design_in_progress":             ("In Progress",     "design"),
         "awaiting_design_approval":       ("Awaiting Review", "design"),
         "task_plan_in_progress":          ("In Progress",     "planning"),
         "task_plan_ready":                ("Awaiting Review", "planning"),
-        "implementation_in_progress":     ("In Progress",     "implementation"),
-        "test_failure_loop":              ("In Progress",     "implementation"),
-        "awaiting_review":                ("Awaiting Review", "review"),
-        "feedback_incorporation":         ("In Progress",     "implementation"),
+        "feedback_incorporation":         ("In Progress",     ""),   # story handled below
         "blocked":                        ("Blocked",         ""),
         "done":                           ("Done",            ""),
     }
@@ -786,8 +821,8 @@ def github_sync_board():
 
     board_status, phase = STATE_BOARD.get(wf.state.value, ("In Progress", ""))
 
-    def _ensure_on_board(item: dict, phase: str) -> str:
-        """Return item_id, adding the issue to the board first if missing."""
+    def _ensure_phase_on_board(item: dict, p: str) -> str:
+        """Return item_id for a phase issue, adding to board first if missing."""
         item_id = item.get("item_id", "")
         issue_number = item.get("issue")
         if not item_id and issue_number and project_info:
@@ -795,25 +830,62 @@ def github_sync_board():
             if node_id:
                 item_id = gh.add_to_project(project_info["node_id"], node_id)
                 if item_id:
-                    wf.set_phase_item(phase, issue_number, item_id)
+                    wf.set_phase_item(p, issue_number, item_id)
                     click.echo(f"added #{issue_number} to board")
+        return item_id
+
+    def _ensure_story_on_board(story_id: str, item: dict) -> str:
+        """Return item_id for a story issue, adding to board first if missing."""
+        item_id = item.get("item_id", "")
+        issue_number = item.get("number") or item.get("issue")
+        if not item_id and issue_number and project_info:
+            node_id = gh._get_issue_node_id(repo, issue_number)
+            if node_id:
+                item_id = gh.add_to_project(project_info["node_id"], node_id)
+                if item_id:
+                    wf.set_story_items({story_id: {"number": issue_number, "item_id": item_id}})
+                    click.echo(f"added #{issue_number} ({story_id}) to board")
         return item_id
 
     if wf.state.value == "done":
         # Move all phase issues to Done and close them
         for p, item in wf.github_phase_items.items():
-            item_id = _ensure_on_board(item, p)
+            item_id = _ensure_phase_on_board(item, p)
             if item_id:
                 gh.move_phase_issue(project_info, item_id, "Done")
             issue_number = item.get("issue")
             if issue_number:
                 gh.close_issue(repo, issue_number, comment="Closed automatically — SDLC workflow complete.")
+        # Move all story issues to Done and close them
+        for story_id, item in wf.github_story_items.items():
+            item_id = _ensure_story_on_board(story_id, item)
+            if item_id:
+                gh.move_phase_issue(project_info, item_id, "Done")
+            issue_number = item.get("number") or item.get("issue")
+            if issue_number:
+                gh.close_issue(repo, issue_number, comment=f"Closed automatically — {story_id} complete.")
         # Close all task issues too
         for task_id, item in wf.github_task_items.items():
             issue_number = item.get("number") or item.get("issue")
             if issue_number:
                 gh.close_issue(repo, issue_number, comment=f"Closed automatically — {task_id} complete.")
-        click.echo("synced: all phases → Done, issues closed")
+        click.echo("synced: all phases and stories → Done, issues closed")
+        return
+
+    # Story states: move current story's board item
+    if wf.state.value in ("story_in_progress", "story_awaiting_review"):
+        story_board_status = "In Progress" if wf.state.value == "story_in_progress" else "Awaiting Review"
+        current = wf.current_story
+        if not current:
+            click.echo("skipped: no current_story set (run 'sdlc story start STORY-NNN' first)")
+            return
+        story_item = wf.github_story_items.get(current, {})
+        item_id = _ensure_story_on_board(current, story_item)
+        if not item_id:
+            click.echo(f"skipped: no board item for {current}")
+            return
+        ok = gh.move_phase_issue(project_info, item_id, story_board_status)
+        click.echo(f"{'synced' if ok else 'failed'}: {current} → {story_board_status}")
         return
 
     if not phase:
@@ -821,7 +893,7 @@ def github_sync_board():
         return
 
     item = wf.github_phase_items.get(phase, {})
-    item_id = _ensure_on_board(item, phase)
+    item_id = _ensure_phase_on_board(item, phase)
     if not item_id:
         click.echo(f"skipped: no board item for phase {phase} (run 'sdlc github setup' first)")
         return
@@ -851,9 +923,6 @@ def github_create_task_issues(plan_file):
         return
 
     plan_path = project_dir / plan_file
-    if not plan_path.exists():
-        # Also check the legacy artifacts location
-        plan_path = sdlc_home(project_dir) / "workflow" / "artifacts" / "plan.md"
     if not plan_path.exists():
         click.echo(f"error: plan file not found at {plan_file}", err=True)
         sys.exit(1)
@@ -885,6 +954,57 @@ def github_create_task_issues(plan_file):
     click.echo(f"created: {len(created)} issue(s)")
 
 
+@github.command("create-story-issues")
+@click.argument("plan_file", default="docs/sdlc/plan.md")
+def github_create_story_issues(plan_file):
+    """Parse plan.md and create one GitHub issue per STORY-NNN, added to the board.
+
+    Claude calls this after the task plan is approved. Each STORY-NNN becomes a
+    tracked issue that groups its TASK-NNN children on the project board.
+    """
+    from sdlc_orchestrator.integrations import github as gh
+
+    project_dir = _require_project()
+    spec = MemoryManager(project_dir).spec()
+    repo = spec.get("repo", "")
+    wf = WorkflowState(project_dir)
+    project_info = wf.github_project
+
+    if not repo:
+        click.echo("skipped: no repo configured")
+        return
+
+    plan_path = project_dir / plan_file
+    if not plan_path.exists():
+        click.echo(f"error: plan file not found at {plan_file}", err=True)
+        sys.exit(1)
+
+    stories = gh.parse_plan_stories(plan_path.read_text())
+    if not stories:
+        click.echo("no stories found in plan.md (add # STORY-NNN: Title sections)")
+        return
+
+    existing = wf.github_story_items
+    new_stories = [s for s in stories if s["id"] not in existing]
+
+    if not new_stories:
+        click.echo(f"all {len(stories)} story issues already exist")
+        return
+
+    console.print(f"  Creating {len(new_stories)} story issue(s)...")
+    created = gh.create_story_issues(
+        repo=repo,
+        stories=new_stories,
+        project_info=project_info,
+        epic_issue=wf.github_epic_issue,
+    )
+    wf.set_story_items(created)
+
+    for story_id, info in created.items():
+        console.print(f"  [green]✓[/green] #{info['number']} {story_id}")
+    click.echo(f"created: {len(created)} story issue(s)")
+
+
 @github.command("close-phase-issue")
 @click.argument("phase")
 @click.option("--comment", default="", help="Optional closing comment")
@@ -906,13 +1026,6 @@ def github_close_phase_issue(phase, comment):
     gh.close_issue(repo, issue_number, comment=comment or f"Phase {phase} complete.")
     click.echo(f"closed: #{issue_number} ({phase})")
 
-
-@github.command("create-board")
-def github_create_board():
-    """Create the GitHub project board for this project (legacy — use 'sdlc github setup')."""
-    project_dir = _require_project()
-    spec = MemoryManager(project_dir).spec()
-    _setup_github_board(project_dir, spec)
 
 
 # ── sdlc status (human-facing) ────────────────────────────────────────────────
@@ -952,61 +1065,16 @@ def status():
     console.print("\n[dim]To continue: open Claude Code and invoke[/dim] [bold]/sdlc-orchestrate[/bold]")
 
 
-# ── sdlc answer (human-facing) ────────────────────────────────────────────────
-
-@cli.command()
-@click.option("--file", "from_file", is_flag=True,
-              help="Answers already written in the questions file")
-def answer(from_file):
-    """Submit answers to requirement clarifying questions."""
-    project_dir = _require_project()
-    wf = WorkflowState(project_dir)
-
-    if wf.state != State.AWAITING_REQUIREMENT_ANSWER:
-        console.print(f"[yellow]Not awaiting answers. Current: {wf.state.value}[/yellow]")
-        return
-
-    home = sdlc_home(project_dir)
-    questions_file = home / "workflow" / "artifacts" / "requirement_questions.md"
-    if not questions_file.exists():
-        console.print("[red]requirement_questions.md not found. Ask Claude to run /sdlc-orchestrate first.[/red]")
-        return
-
-    if not from_file:
-        content = questions_file.read_text()
-        console.print(Panel("[bold]Requirement Clarifying Questions[/bold]", style="blue"))
-        answers: list[str] = []
-        i, lines = 0, content.splitlines()
-        while i < len(lines):
-            line = lines[i]
-            if line.startswith("## Q"):
-                console.print(f"\n[bold]{line}[/bold]")
-                i += 1
-                while i < len(lines) and not lines[i].startswith("**Answer:**") \
-                        and not lines[i].startswith("## Q"):
-                    if lines[i].strip():
-                        console.print(f"  {lines[i]}")
-                    i += 1
-                ans = click.prompt("  Your answer")
-                answers.append(f"\n{line}\n**Answer:** {ans}\n")
-            else:
-                i += 1
-        questions_file.write_text("# Requirement Questions & Answers\n\n" + "\n".join(answers))
-        console.print("[green]✓ Answers saved.[/green]")
-
-    wf.transition(State.REQUIREMENT_IN_PROGRESS)
-    console.print("  Tell Claude to continue (/sdlc-orchestrate).")
 
 
 # ── sdlc watch ───────────────────────────────────────────────────────────────
 
 # Maps each approval gate to the branch Claude should poll
 _GATE_BRANCHES: dict[str, str] = {
-    "awaiting_requirement_answer":    "sdlc/requirements",
     "requirement_ready_for_approval": "sdlc/requirements",
     "awaiting_design_approval":       "sdlc/design",
     "task_plan_ready":                "sdlc/plan",
-    "awaiting_review":                "sdlc/implementation",
+    "story_awaiting_review":          "",   # branch is dynamic: sdlc/<current_story>
     "blocked":                        "",
 }
 

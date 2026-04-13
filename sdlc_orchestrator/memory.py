@@ -59,10 +59,6 @@ class MemoryManager:
     def spec(self) -> dict:
         if self.spec_path.exists():
             return yaml.safe_load(self.spec_path.read_text()) or {}
-        # Legacy: spec.yaml in project root
-        legacy = self.project_dir / "spec.yaml"
-        if legacy.exists():
-            return yaml.safe_load(legacy.read_text()) or {}
         return {}
 
     def feedback(self, phase: str) -> str:

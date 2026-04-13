@@ -66,15 +66,10 @@ def create_symlink(project_dir: Path) -> Path:
 
 
 def find_project_dir(start: Path | None = None) -> Path | None:
-    """
-    Walk up from start (default: cwd) looking for a project root.
-    Markers: .sdlc/  or  spec.yaml (legacy).
-    """
+    """Walk up from start (default: cwd) looking for a project root (.sdlc/ marker)."""
     p = (start or Path.cwd()).resolve()
     for candidate in [p, *p.parents]:
         if (candidate / ".sdlc").is_dir():
-            return candidate
-        if (candidate / "spec.yaml").is_file():   # legacy layout
             return candidate
     return None
 
