@@ -102,6 +102,14 @@ Claude will:
 
 At the end, Claude will tell you to review `requirements.md` and start autonomous mode when ready.
 
+If GitHub is configured, also run (in terminal):
+
+```bash
+sdlc github setup
+```
+
+This creates labels, the Projects v2 board, workflow automations, and one issue per SDLC phase — all in one command.
+
 ---
 
 ### Step 3 — Start autonomous orchestration
@@ -384,12 +392,57 @@ A symlink is also created at `~/.sdlc/projects/<slug>` pointing to `.sdlc/`.
 Set `slack_webhook` in `spec.yaml`. Claude automatically sends a notification whenever it reaches an approval gate, including a summary of what was produced and the exact command to approve.
 
 ### GitHub
-Authenticate `gh` CLI and set `repo` in `spec.yaml`. The orchestrator will:
-- Create an epic issue for the project
-- Create per-phase child issues
-- Set up a GitHub project board
-- Open a PR after implementation with phase metadata
-- Pull PR review comments back as feedback files
+
+With `gh` CLI authenticated and `repo` set in `spec.yaml`, run once after `sdlc init`:
+
+```bash
+sdlc github setup
+```
+
+This creates:
+
+**Labels** — colour-coded per phase:
+
+| Label | Phase |
+|-------|-------|
+| `sdlc:requirement` | Requirements |
+| `sdlc:design` | Design |
+| `sdlc:plan` | Task planning |
+| `sdlc:implementation` | Implementation & tasks |
+| `sdlc:testing` | Testing |
+| `sdlc:review` | Code review |
+| `awaiting-review` | Any gate |
+| `blocked` | Blocked state |
+
+**GitHub Projects v2 board** with a Status field:
+
+```
+Backlog → In Progress → Awaiting Review → Blocked → Done
+```
+
+**Workflow automations** (enabled automatically):
+- Item closed → Done
+- PR merged → Done
+- Item reopened → In Progress
+
+**Phase issues** — one issue per SDLC phase added to Backlog at setup. As Claude advances through the workflow, each issue moves across the board automatically via `sdlc github sync-board`.
+
+**Task issues** — when the task plan is approved, Claude parses `docs/sdlc/plan.md` and creates one GitHub issue per `TASK-NNN`, each labelled `sdlc:implementation` and added to the board.
+
+**PR → issue linking** — every phase PR includes `Closes #N` so merging the PR automatically closes the phase issue and triggers the workflow automation to move it to Done.
+
+The result:
+
+```
+GitHub Projects Board
+├── #1  [sdlc:requirement] Requirements        Done ✓
+├── #2  [sdlc:design]      System Design       Done ✓
+├── #3  [sdlc:plan]        Task Plan           Done ✓
+├── #4  [sdlc:impl]        TASK-001: Auth      In Progress
+├── #5  [sdlc:impl]        TASK-002: API       Backlog
+├── #6  [sdlc:impl]        TASK-003: UI        Backlog
+└── #7  [sdlc:review]      Code Review         Backlog
+```
 
 ---
 
@@ -433,6 +486,9 @@ Authenticate `gh` CLI and set `repo` in `spec.yaml`. The orchestrator will:
 | `sdlc artifact read <name>` | Read a phase artifact |
 | `sdlc artifact list` | List available artifacts |
 | `sdlc notify <phase> <event>` | Send a Slack notification |
+| `sdlc github setup` | Labels + board + workflows + phase issues (run once) |
+| `sdlc github sync-board` | Move active phase issue to correct board column |
+| `sdlc github create-task-issues [plan_file]` | Create one issue per TASK-NNN in plan.md |
 | `sdlc github pr-status <branch>` | Check if a phase PR is approved or merged |
 | `sdlc github ingest-feedback <branch> <phase>` | Pull PR review comments as feedback |
 | `sdlc github create-pr <branch> <phase>` | Open a PR for a phase branch |

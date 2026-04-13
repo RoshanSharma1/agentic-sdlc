@@ -132,8 +132,11 @@ class WorkflowState:
             "approval_needed": False,
             "blocked_reason": None,
             "current_branch": "main",
-            "github_epic_issue": None,
-            "github_project_id": None,
+            # GitHub project board (Projects v2)
+            "github_project": None,        # {number, node_id, status_field_id, status_options}
+            "github_epic_issue": None,     # epic issue number
+            "github_phase_items": {},      # {phase: {issue, item_id}} — board items per phase
+            "github_task_items": {},       # {TASK-001: {issue, item_id}} — per implementation task
             "artifacts": {
                 "requirement_questions": None,
                 "requirements": None,
@@ -169,8 +172,20 @@ class WorkflowState:
         return self._data.get("artifacts", {})
 
     @property
+    def github_project(self) -> Optional[dict]:
+        return self._data.get("github_project")
+
+    @property
     def github_epic_issue(self) -> Optional[int]:
         return self._data.get("github_epic_issue")
+
+    @property
+    def github_phase_items(self) -> dict:
+        return self._data.get("github_phase_items", {})
+
+    @property
+    def github_task_items(self) -> dict:
+        return self._data.get("github_task_items", {})
 
     @property
     def github_project_id(self) -> Optional[str]:
@@ -223,6 +238,21 @@ class WorkflowState:
             self._data["github_epic_issue"] = epic_issue
         if project_id is not None:
             self._data["github_project_id"] = project_id
+        self.save()
+
+    def set_github_project(self, project_info: dict) -> None:
+        self._data["github_project"] = project_info
+        self.save()
+
+    def set_phase_item(self, phase: str, issue: int, item_id: str) -> None:
+        self._data.setdefault("github_phase_items", {})[phase] = {
+            "issue": issue, "item_id": item_id,
+        }
+        self.save()
+
+    def set_task_items(self, task_items: dict) -> None:
+        """Merge task_items ({TASK-001: {issue, item_id}}) into state."""
+        self._data.setdefault("github_task_items", {}).update(task_items)
         self.save()
 
     def _push_history(self, state: State) -> None:

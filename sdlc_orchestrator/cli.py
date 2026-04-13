@@ -655,9 +655,208 @@ def github_ingest_feedback(branch, phase):
     click.echo(f"ingested: {count} comment(s) → .sdlc/feedback/{phase}.md")
 
 
+@github.command("setup")
+def github_setup():
+    """Full GitHub setup: labels, project board, workflows, and phase issues.
+
+    Run once after sdlc init (or re-run to repair). Creates:
+      - SDLC labels (sdlc:requirement, sdlc:design, etc.)
+      - GitHub Projects v2 board with Status field
+      - Built-in workflow automations (item closed → Done, PR merged → Done, etc.)
+      - One issue per SDLC phase, added to the board in Backlog
+    """
+    from sdlc_orchestrator.integrations import github as gh
+
+    project_dir = _require_project()
+    spec = MemoryManager(project_dir).spec()
+    repo = spec.get("repo", "")
+
+    if not repo:
+        console.print("[red]No repo in spec.yaml — set repo: owner/repo first.[/red]")
+        sys.exit(1)
+
+    if not gh.is_available():
+        console.print("[red]gh CLI not found or not authenticated.[/red]")
+        sys.exit(1)
+
+    project_name = spec.get("project_name", project_dir.name)
+    wf = WorkflowState(project_dir)
+
+    # 1. Labels
+    console.print("  Creating labels...")
+    created = gh.setup_labels(repo)
+    console.print(f"  [green]✓[/green] {len(created)} label(s) ready")
+
+    # 2. Project board
+    console.print("  Creating project board...")
+    project_info = gh.create_project_board(project_name, repo)
+    if not project_info:
+        console.print("  [yellow]Project board creation failed — check gh auth scope (project).[/yellow]")
+    else:
+        wf.set_github_project(project_info)
+        console.print(
+            f"  [green]✓[/green] Board #{project_info['number']} · "
+            f"{len(project_info.get('status_options', {}))} status columns"
+        )
+
+        # 3. Workflow automations
+        console.print("  Enabling workflow automations...")
+        enabled = gh.enable_project_workflows(project_info["node_id"])
+        if enabled:
+            console.print(f"  [green]✓[/green] Workflows: {', '.join(enabled)}")
+        else:
+            console.print("  [dim]Workflows may already be enabled or require manual setup in GitHub UI.[/dim]")
+
+    # 4. Phase issues
+    console.print("  Creating phase issues...")
+    phases = [
+        ("requirement",    f"[sdlc:requirement] Requirements"),
+        ("design",         f"[sdlc:design] System Design"),
+        ("planning",       f"[sdlc:plan] Task Plan"),
+        ("implementation", f"[sdlc:implementation] Implementation"),
+        ("testing",        f"[sdlc:testing] Testing & Validation"),
+        ("review",         f"[sdlc:review] Code Review"),
+    ]
+    for phase, title in phases:
+        if wf.github_phase_items.get(phase):
+            continue  # already created
+        info = gh.create_phase_issue(
+            repo=repo,
+            phase=phase,
+            title=title,
+            body=f"Tracks the **{phase}** phase of {project_name}.\n\nArtifact will be linked when this phase begins.",
+            project_info=project_info,
+        )
+        if info.get("number"):
+            wf.set_phase_item(phase, info["number"], info.get("item_id", ""))
+            console.print(f"  [green]✓[/green] #{info['number']} {title}")
+
+    console.print("\n[bold green]GitHub setup complete.[/bold green]")
+    if project_info:
+        console.print(
+            f"  Board: https://github.com/orgs/{repo.split('/')[0]}/projects/{project_info['number']}"
+        )
+
+
+@github.command("sync-board")
+def github_sync_board():
+    """Move the active phase issue to the correct board column based on current state.
+
+    Claude calls this after every sdlc state set to keep the board in sync.
+    """
+    from sdlc_orchestrator.integrations import github as gh
+
+    # State → (board status, phase whose issue to move)
+    STATE_BOARD: dict[str, tuple[str, str]] = {
+        "draft_requirement":              ("In Progress",     "requirement"),
+        "awaiting_requirement_answer":    ("Awaiting Review", "requirement"),
+        "requirement_in_progress":        ("In Progress",     "requirement"),
+        "requirement_ready_for_approval": ("Awaiting Review", "requirement"),
+        "design_in_progress":             ("In Progress",     "design"),
+        "awaiting_design_approval":       ("Awaiting Review", "design"),
+        "task_plan_in_progress":          ("In Progress",     "planning"),
+        "task_plan_ready":                ("Awaiting Review", "planning"),
+        "implementation_in_progress":     ("In Progress",     "implementation"),
+        "test_failure_loop":              ("In Progress",     "implementation"),
+        "awaiting_review":                ("Awaiting Review", "review"),
+        "feedback_incorporation":         ("In Progress",     "implementation"),
+        "blocked":                        ("Blocked",         ""),
+        "done":                           ("Done",            ""),
+    }
+
+    project_dir = _require_project()
+    spec = MemoryManager(project_dir).spec()
+    repo = spec.get("repo", "")
+    wf = WorkflowState(project_dir)
+    project_info = wf.github_project
+
+    if not repo or not project_info:
+        click.echo("skipped: no repo or project board configured")
+        return
+
+    board_status, phase = STATE_BOARD.get(wf.state.value, ("In Progress", ""))
+
+    if wf.state.value == "done":
+        # Move all phase issues to Done
+        for p, item in wf.github_phase_items.items():
+            item_id = item.get("item_id", "")
+            if item_id:
+                gh.move_phase_issue(project_info, item_id, "Done")
+        click.echo("synced: all phases → Done")
+        return
+
+    if not phase:
+        click.echo(f"skipped: no phase mapped for state {wf.state.value}")
+        return
+
+    item = wf.github_phase_items.get(phase, {})
+    item_id = item.get("item_id", "")
+    if not item_id:
+        click.echo(f"skipped: no board item for phase {phase}")
+        return
+
+    ok = gh.move_phase_issue(project_info, item_id, board_status)
+    click.echo(f"{'synced' if ok else 'failed'}: {phase} → {board_status}")
+
+
+@github.command("create-task-issues")
+@click.argument("plan_file", default="docs/sdlc/plan.md")
+def github_create_task_issues(plan_file):
+    """Parse plan.md and create one GitHub issue per task, added to the board.
+
+    Claude calls this after the task plan is approved and before implementation
+    begins. Each TASK-NNN becomes a tracked issue on the project board.
+    """
+    from sdlc_orchestrator.integrations import github as gh
+
+    project_dir = _require_project()
+    spec = MemoryManager(project_dir).spec()
+    repo = spec.get("repo", "")
+    wf = WorkflowState(project_dir)
+    project_info = wf.github_project
+
+    if not repo:
+        click.echo("skipped: no repo configured")
+        return
+
+    plan_path = project_dir / plan_file
+    if not plan_path.exists():
+        # Also check the legacy artifacts location
+        plan_path = sdlc_home(project_dir) / "workflow" / "artifacts" / "plan.md"
+    if not plan_path.exists():
+        click.echo(f"error: plan file not found at {plan_file}", err=True)
+        sys.exit(1)
+
+    tasks = gh.parse_plan_tasks(plan_path.read_text())
+    if not tasks:
+        click.echo("no tasks found in plan.md")
+        return
+
+    # Skip tasks already created
+    existing = wf.github_task_items
+    new_tasks = [t for t in tasks if t["id"] not in existing]
+
+    if not new_tasks:
+        click.echo(f"all {len(tasks)} task issues already exist")
+        return
+
+    console.print(f"  Creating {len(new_tasks)} task issue(s)...")
+    created = gh.create_task_issues(
+        repo=repo,
+        tasks=new_tasks,
+        project_info=project_info,
+        epic_issue=wf.github_epic_issue,
+    )
+    wf.set_task_items(created)
+
+    for task_id, info in created.items():
+        console.print(f"  [green]✓[/green] #{info['number']} {task_id}")
+    click.echo(f"created: {len(created)} issue(s)")
+
+
 @github.command("create-board")
 def github_create_board():
-    """Create the GitHub project board for this project."""
+    """Create the GitHub project board for this project (legacy — use 'sdlc github setup')."""
     project_dir = _require_project()
     spec = MemoryManager(project_dir).spec()
     _setup_github_board(project_dir, spec)

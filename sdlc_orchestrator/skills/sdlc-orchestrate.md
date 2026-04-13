@@ -48,7 +48,8 @@ These `sdlc` commands are your state and integration layer — call them via Bas
 | `sdlc github pr-status <branch>` | Check if a phase PR is approved/merged |
 | `sdlc github ingest-feedback <branch> <phase>` | Pull PR review comments as feedback |
 | `sdlc github create-pr <branch> <phase>` | Open PR for a phase branch |
-| `sdlc github create-issue <title> <body-file>` | Create GitHub issue |
+| `sdlc github sync-board` | Move active phase issue to correct board column |
+| `sdlc github create-task-issues` | Create one GitHub issue per TASK-NNN in plan.md |
 | `sdlc tick release` | Release tick lock (LAST THING, EVERY TIME) |
 
 Read and write all project files directly with your native tools. Use `sdlc`
@@ -82,6 +83,7 @@ reviewable via PR, and persistent outside the local machine.
      b. status == approved or merged?
           → sdlc github ingest-feedback sdlc/<phase> <phase>
           → sdlc state set <next-state>
+          → sdlc github sync-board      ← move issue on board
           → continue to step 4
      c. status == open or not-found?
           → remind human what to review and where the PR is
@@ -91,8 +93,9 @@ reviewable via PR, and persistent outside the local machine.
 6. commit artifact on sdlc/<phase> branch
 7. push branch + open PR with full artifact as body
 8. sdlc state set <approval-gate> — Slack fires automatically
-9. sdlc tick release              — always release before stopping
-10. stop (next /loop tick will poll PR status and continue)
+9. sdlc github sync-board         — move phase issue to "Awaiting Review"
+10. sdlc tick release             — always release before stopping
+11. stop (next /loop tick will poll PR status and continue)
 ```
 
 Never skip a step. Never advance state before the phase work is complete and
@@ -278,8 +281,13 @@ sdlc github pr-status sdlc/plan
 - **approved or merged** →
   ```bash
   sdlc github ingest-feedback sdlc/plan planning
+  sdlc github create-task-issues         # one issue per TASK-NNN → board
   ```
-  Apply feedback, commit, then: `sdlc state set implementation_in_progress`
+  Apply feedback, commit, then:
+  ```bash
+  sdlc state set implementation_in_progress
+  sdlc github sync-board
+  ```
 
 - **open** → stop.
 
