@@ -68,7 +68,20 @@ executor: claude-code
 
 ---
 
-## Step 4 — Draft requirements
+## Step 4 — GitHub setup (if repo configured)
+
+If `repo` was provided in spec.yaml, run:
+```bash
+sdlc github setup
+```
+
+This creates labels, the project board, workflow automations, and phase issues.
+It is idempotent — safe to re-run. If it fails (e.g. missing `project` scope),
+warn the user but continue — the orchestrator will retry on first tick.
+
+---
+
+## Step 5 — Draft requirements
 
 Invoke the `sdlc-requirement` skill. It will read `spec.yaml`, generate
 clarifying questions in `.sdlc/workflow/artifacts/requirement_questions.md`,
@@ -79,7 +92,7 @@ non-empty.
 
 ---
 
-## Step 5 — Set state and hand off
+## Step 6 — Set state and hand off
 
 Run:
 ```bash

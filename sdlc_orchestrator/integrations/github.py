@@ -499,13 +499,20 @@ def get_pr_number(repo: str, branch: str) -> Optional[int]:
 
 
 def get_pr_comments(repo: str, branch: str) -> list[str]:
-    """Fetch review comments from the PR for this branch."""
+    """Fetch all comments and review bodies from the PR for this branch."""
+    collected: list[str] = []
     try:
-        r = _gh("pr", "view", branch, "--repo", repo, "--json", "comments")
+        r = _gh("pr", "view", branch, "--repo", repo, "--json", "comments,reviews")
         data = json.loads(r.stdout)
-        return [c["body"] for c in data.get("comments", [])]
+        for c in data.get("comments", []):
+            if c.get("body", "").strip():
+                collected.append(c["body"])
+        for review in data.get("reviews", []):
+            if review.get("body", "").strip():
+                collected.append(review["body"])
     except (subprocess.CalledProcessError, json.JSONDecodeError):
-        return []
+        pass
+    return collected
 
 
 def merge_pr(repo: str, branch: str) -> bool:

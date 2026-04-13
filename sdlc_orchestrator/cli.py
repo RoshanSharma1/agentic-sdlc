@@ -195,13 +195,17 @@ def _setup_github_board(project_dir: Path, spec: dict) -> None:
     repo = spec.get("repo", "")
     if not repo or not github.is_available():
         return
-    project_id = github.create_project_board(spec.get("project_name", ""), repo)
-    if project_id:
-        wf = WorkflowState(project_dir)
-        wf.set_github(project_id=project_id)
-        console.print(f"  [green]✓[/green] GitHub project board (id: {project_id})")
+    wf = WorkflowState(project_dir)
+    if wf.github_project or wf.github_project_id:
+        console.print("  [dim]GitHub project board already exists — skipped[/dim]")
+        return
+    project_info = github.create_project_board(spec.get("project_name", ""), repo)
+    if project_info:
+        wf.set_github_project(project_info)
+        wf.save()
+        console.print(f"  [green]✓[/green] GitHub project board #{project_info['number']}")
     else:
-        console.print("  [yellow]GitHub board skipped (check gh auth)[/yellow]")
+        console.print("  [yellow]GitHub board skipped (check gh auth scope: project)[/yellow]")
 
 def _run_analyze_skill(project_dir: Path, spec: dict) -> None:
     skill_path = Path.home() / ".claude" / "commands" / "sdlc-analyze-repo.md"
@@ -688,18 +692,24 @@ def github_setup():
     console.print(f"  [green]✓[/green] {len(created)} label(s) ready")
 
     # 2. Project board
-    console.print("  Creating project board...")
-    project_info = gh.create_project_board(project_name, repo)
-    if not project_info:
-        console.print("  [yellow]Project board creation failed — check gh auth scope (project).[/yellow]")
+    project_info = wf.github_project
+    if project_info:
+        console.print(f"  [dim]Board #{project_info.get('number')} already exists — skipped[/dim]")
     else:
-        wf.set_github_project(project_info)
-        console.print(
-            f"  [green]✓[/green] Board #{project_info['number']} · "
-            f"{len(project_info.get('status_options', {}))} status columns"
-        )
+        console.print("  Creating project board...")
+        project_info = gh.create_project_board(project_name, repo)
+        if not project_info:
+            console.print("  [yellow]Project board creation failed — check gh auth scope (project).[/yellow]")
+        else:
+            wf.set_github_project(project_info)
+            wf.save()
+            console.print(
+                f"  [green]✓[/green] Board #{project_info['number']} · "
+                f"{len(project_info.get('status_options', {}))} status columns"
+            )
 
-        # 3. Workflow automations
+    # 3. Workflow automations
+    if project_info and project_info.get("node_id"):
         console.print("  Enabling workflow automations...")
         enabled = gh.enable_project_workflows(project_info["node_id"])
         if enabled:
@@ -776,13 +786,34 @@ def github_sync_board():
 
     board_status, phase = STATE_BOARD.get(wf.state.value, ("In Progress", ""))
 
+    def _ensure_on_board(item: dict, phase: str) -> str:
+        """Return item_id, adding the issue to the board first if missing."""
+        item_id = item.get("item_id", "")
+        issue_number = item.get("issue")
+        if not item_id and issue_number and project_info:
+            node_id = gh._get_issue_node_id(repo, issue_number)
+            if node_id:
+                item_id = gh.add_to_project(project_info["node_id"], node_id)
+                if item_id:
+                    wf.set_phase_item(phase, issue_number, item_id)
+                    click.echo(f"added #{issue_number} to board")
+        return item_id
+
     if wf.state.value == "done":
-        # Move all phase issues to Done
+        # Move all phase issues to Done and close them
         for p, item in wf.github_phase_items.items():
-            item_id = item.get("item_id", "")
+            item_id = _ensure_on_board(item, p)
             if item_id:
                 gh.move_phase_issue(project_info, item_id, "Done")
-        click.echo("synced: all phases → Done")
+            issue_number = item.get("issue")
+            if issue_number:
+                gh.close_issue(repo, issue_number, comment="Closed automatically — SDLC workflow complete.")
+        # Close all task issues too
+        for task_id, item in wf.github_task_items.items():
+            issue_number = item.get("number") or item.get("issue")
+            if issue_number:
+                gh.close_issue(repo, issue_number, comment=f"Closed automatically — {task_id} complete.")
+        click.echo("synced: all phases → Done, issues closed")
         return
 
     if not phase:
@@ -790,9 +821,9 @@ def github_sync_board():
         return
 
     item = wf.github_phase_items.get(phase, {})
-    item_id = item.get("item_id", "")
+    item_id = _ensure_on_board(item, phase)
     if not item_id:
-        click.echo(f"skipped: no board item for phase {phase}")
+        click.echo(f"skipped: no board item for phase {phase} (run 'sdlc github setup' first)")
         return
 
     ok = gh.move_phase_issue(project_info, item_id, board_status)
@@ -852,6 +883,28 @@ def github_create_task_issues(plan_file):
     for task_id, info in created.items():
         console.print(f"  [green]✓[/green] #{info['number']} {task_id}")
     click.echo(f"created: {len(created)} issue(s)")
+
+
+@github.command("close-phase-issue")
+@click.argument("phase")
+@click.option("--comment", default="", help="Optional closing comment")
+def github_close_phase_issue(phase, comment):
+    """Close the GitHub issue for a completed phase."""
+    from sdlc_orchestrator.integrations import github as gh
+    project_dir = _require_project()
+    spec = MemoryManager(project_dir).spec()
+    repo = spec.get("repo", "")
+    if not repo:
+        click.echo("skipped: no repo configured")
+        return
+    wf = WorkflowState(project_dir)
+    item = wf.github_phase_items.get(phase, {})
+    issue_number = item.get("issue")
+    if not issue_number:
+        click.echo(f"skipped: no issue found for phase {phase}")
+        return
+    gh.close_issue(repo, issue_number, comment=comment or f"Phase {phase} complete.")
+    click.echo(f"closed: #{issue_number} ({phase})")
 
 
 @github.command("create-board")
