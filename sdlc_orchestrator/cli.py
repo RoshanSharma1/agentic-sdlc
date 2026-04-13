@@ -746,6 +746,212 @@ def answer(from_file):
     console.print("  Tell Claude to continue (/sdlc-orchestrate).")
 
 
+# ── sdlc watch ───────────────────────────────────────────────────────────────
+
+# Maps each approval gate to the branch Claude should poll
+_GATE_BRANCHES: dict[str, str] = {
+    "awaiting_requirement_answer":    "sdlc/requirements",
+    "requirement_ready_for_approval": "sdlc/requirements",
+    "awaiting_design_approval":       "sdlc/design",
+    "task_plan_ready":                "sdlc/plan",
+    "awaiting_review":                "sdlc/implementation",
+    "blocked":                        "",
+}
+
+
+@cli.command()
+@click.option("--interval", default=30, show_default=True,
+              help="Seconds between GitHub polls")
+def watch(interval):
+    """Watch for PR approval and resume Claude automatically.
+
+    Runs in the foreground. Start it in a separate terminal or background it
+    with '&'. When it detects a PR approval or merge, it triggers Claude to
+    continue the SDLC workflow without any manual sdlc state approve.
+
+    \b
+    Typical use:
+      Terminal 1: sdlc watch
+      Terminal 2: /loop 10m /sdlc-orchestrate   (inside Claude Code)
+    """
+    import time
+    import os
+
+    project_dir = _require_project()
+    spec = MemoryManager(project_dir).spec()
+    repo = spec.get("repo", "")
+
+    if not repo:
+        console.print("[yellow]No GitHub repo in spec.yaml — watch has nothing to poll.[/yellow]")
+        console.print("  Set [bold]repo: owner/repo[/bold] in .sdlc/spec.yaml and re-run.")
+        sys.exit(1)
+
+    from sdlc_orchestrator.integrations.github import get_pr_status, is_available
+    if not is_available():
+        console.print("[red]gh CLI not found or not authenticated. Run: gh auth login[/red]")
+        sys.exit(1)
+
+    console.print(f"[bold]sdlc watch[/bold] — polling GitHub every {interval}s")
+    console.print(f"  repo: [dim]{repo}[/dim]")
+    console.print("  Press Ctrl-C to stop.\n")
+
+    last_state: str = ""
+    last_pr_status: str = ""
+
+    while True:
+        try:
+            wf = WorkflowState(project_dir)
+            current_state = wf.state.value
+
+            if wf.state == State.DONE:
+                console.print("[green]✓ Workflow complete.[/green]")
+                break
+
+            branch = _GATE_BRANCHES.get(current_state, "")
+
+            if not branch:
+                # Not at an approval gate — nothing to watch right now
+                if current_state != last_state:
+                    console.print(f"[dim]{current_state}[/dim] — Claude is working, not at a gate")
+                    last_state = current_state
+                time.sleep(interval)
+                continue
+
+            pr_status = get_pr_status(repo, branch) or "not-found"
+
+            if current_state != last_state or pr_status != last_pr_status:
+                console.print(f"[dim]{current_state}[/dim]  PR [{branch}]: [bold]{pr_status}[/bold]")
+                last_state = current_state
+                last_pr_status = pr_status
+
+            if pr_status in ("approved", "merged"):
+                console.print(f"\n[green]✓ PR approved[/green] — triggering Claude to continue...")
+                result = subprocess.run(
+                    ["claude", "-p", "--dangerously-skip-permissions", "/sdlc-orchestrate"],
+                    cwd=str(project_dir),
+                )
+                if result.returncode != 0:
+                    console.print("[yellow]Claude exited with an error — check Claude Code output.[/yellow]")
+                last_pr_status = ""  # Reset so we re-evaluate next state
+
+            time.sleep(interval)
+
+        except KeyboardInterrupt:
+            console.print("\n[dim]watch stopped.[/dim]")
+            break
+
+
+# ── sdlc webhook ──────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option("--port", default=8080, show_default=True)
+@click.option("--secret", default="", envvar="SDLC_WEBHOOK_SECRET",
+              help="GitHub webhook secret (or set SDLC_WEBHOOK_SECRET env var)")
+def webhook(port, secret):
+    """Start a GitHub webhook receiver for real-time PR event triggers.
+
+    Configure a GitHub webhook on your repo pointing to:
+      http://<your-host>:<port>/webhook
+
+    Events handled: pull_request (closed+merged), pull_request_review (approved)
+
+    \b
+    For local development, expose with ngrok:
+      ngrok http 8080
+      Then set the ngrok URL as the GitHub webhook URL.
+    """
+    import hashlib
+    import hmac
+    import json as _json
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    project_dir = _require_project()
+
+    class WebhookHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):  # suppress default access log
+            pass
+
+        def do_POST(self):
+            if self.path != "/webhook":
+                self.send_response(404)
+                self.end_headers()
+                return
+
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+
+            # Verify signature if secret is set
+            if secret:
+                sig_header = self.headers.get("X-Hub-Signature-256", "")
+                expected = "sha256=" + hmac.new(
+                    secret.encode(), body, hashlib.sha256
+                ).hexdigest()
+                if not hmac.compare_digest(sig_header, expected):
+                    self.send_response(401)
+                    self.end_headers()
+                    return
+
+            try:
+                payload = _json.loads(body)
+            except _json.JSONDecodeError:
+                self.send_response(400)
+                self.end_headers()
+                return
+
+            event = self.headers.get("X-GitHub-Event", "")
+            triggered = False
+
+            # PR merged
+            if event == "pull_request":
+                action = payload.get("action")
+                merged = payload.get("pull_request", {}).get("merged", False)
+                branch = payload.get("pull_request", {}).get("head", {}).get("ref", "")
+                if action == "closed" and merged and branch.startswith("sdlc/"):
+                    console.print(f"[green]✓ PR merged:[/green] {branch} — triggering Claude")
+                    triggered = True
+
+            # PR review approved
+            elif event == "pull_request_review":
+                state = payload.get("review", {}).get("state", "").upper()
+                branch = payload.get("pull_request", {}).get("head", {}).get("ref", "")
+                if state == "APPROVED" and branch.startswith("sdlc/"):
+                    console.print(f"[green]✓ PR approved:[/green] {branch} — triggering Claude")
+                    triggered = True
+
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+            if triggered:
+                subprocess.Popen(
+                    ["claude", "-p", "--dangerously-skip-permissions", "/sdlc-orchestrate"],
+                    cwd=str(project_dir),
+                )
+
+        def do_GET(self):
+            if self.path == "/health":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"ok")
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+    server = HTTPServer(("0.0.0.0", port), WebhookHandler)
+    console.print(f"[bold]sdlc webhook[/bold] — listening on port {port}")
+    console.print(f"  Set GitHub webhook URL to: http://<your-host>:{port}/webhook")
+    console.print(f"  Health check: http://localhost:{port}/health")
+    if secret:
+        console.print("  Signature verification: [green]enabled[/green]")
+    else:
+        console.print("  Signature verification: [yellow]disabled[/yellow] (set --secret or SDLC_WEBHOOK_SECRET)")
+    console.print("  Press Ctrl-C to stop.\n")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        console.print("\n[dim]webhook server stopped.[/dim]")
+
+
 # ── sdlc tick (loop guard) ────────────────────────────────────────────────────
 
 @cli.group()

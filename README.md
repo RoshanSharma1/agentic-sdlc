@@ -186,7 +186,47 @@ History:
 
 ---
 
-### Step 6 — Review the implementation PR
+### Step 6 — Keep Claude on standby (optional but recommended)
+
+By default Claude only runs when you trigger it (via `/loop` or `/sdlc-orchestrate`). To make it resume automatically the moment you approve a PR, use one of two modes:
+
+**Polling mode — `sdlc watch` (no infrastructure needed)**
+
+Run this in a separate terminal alongside Claude Code:
+
+```bash
+sdlc watch
+```
+
+It polls GitHub every 30 seconds. The moment a `sdlc/<phase>` PR is approved or merged, it triggers `claude -p /sdlc-orchestrate` automatically — you never need to touch the terminal again.
+
+```bash
+sdlc watch --interval 60   # poll every 60s instead
+```
+
+**Webhook mode — real-time, zero polling**
+
+For instant response, run the built-in webhook server and point GitHub at it:
+
+```bash
+# 1. Expose a public URL (example using ngrok)
+ngrok http 8080
+
+# 2. Start the receiver
+sdlc webhook --port 8080 --secret your-webhook-secret
+
+# 3. In GitHub repo settings → Webhooks, add:
+#    URL: https://<ngrok-url>/webhook
+#    Content type: application/json
+#    Secret: your-webhook-secret
+#    Events: Pull request reviews, Pull requests
+```
+
+When GitHub fires a PR approved or merged event for any `sdlc/*` branch, the receiver triggers Claude immediately.
+
+---
+
+### Step 7 — Review the implementation PR
 
 When implementation and testing are done, Claude pushes the `sdlc/implementation` branch and opens a PR. Review it normally in GitHub — leave comments on specific lines or as general review comments.
 
@@ -378,6 +418,8 @@ Authenticate `gh` CLI and set `repo` in `spec.yaml`. The orchestrator will:
 |---------|-------------|
 | `sdlc init [source]` | Scaffold a project (new, GitHub repo, or local path) |
 | `sdlc status` | Show current workflow state and history |
+| `sdlc watch [--interval N]` | Poll GitHub PRs and trigger Claude on approval |
+| `sdlc webhook [--port N] [--secret S]` | Webhook receiver for real-time GitHub events |
 | `sdlc state approve` | Advance past a gate manually (fallback when no GitHub) |
 | `sdlc relink [--all]` | Rebuild `~/.sdlc/projects/<slug>` symlink |
 
