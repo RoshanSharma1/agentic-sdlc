@@ -105,9 +105,22 @@ class WorkflowState:
 
     # ── persistence ──────────────────────────────────────────────────────────
 
+    # Maps removed state values → replacement states
+    _STATE_MIGRATIONS: dict[str, str] = {
+        "draft_requirement":           "requirement_in_progress",
+        "awaiting_requirement_answer": "requirement_in_progress",
+        "implementation_in_progress":  "story_in_progress",
+        "test_failure_loop":           "story_in_progress",
+        "awaiting_review":             "story_awaiting_review",
+    }
+
     def _load(self) -> dict:
         if self.path.exists():
-            return json.loads(self.path.read_text())
+            data = json.loads(self.path.read_text())
+            old = data.get("state", "")
+            if old in self._STATE_MIGRATIONS:
+                data["state"] = self._STATE_MIGRATIONS[old]
+            return data
         return self._defaults()
 
     def save(self) -> None:
