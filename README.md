@@ -15,7 +15,7 @@ An **AI agent extension** that turns any supported AI coding agent into an auton
 
 ## How It Works
 
-You install the extension, point it at a project, and run `/sdlc-setup` once inside your agent. After that, a single command — `/sdlc-start` — hands the agent the wheel.
+You install the extension, point it at a project, and run `/sdlc-start` once inside your agent. That's it — `/sdlc-start` handles setup, interviews you, and hands the agent the wheel.
 
 Each phase produces a GitHub PR. The artifact (requirements, design, task plan) lives on a dedicated branch and is readable from anywhere. You review on GitHub, leave comments as feedback, and approve the PR. The agent detects the approval on the next tick and continues — no terminal commands needed.
 
@@ -23,9 +23,8 @@ Each phase produces a GitHub PR. The artifact (requirements, design, task plan) 
 You                          Agent (autonomous)
 ────                         ──────────────────
 sdlc init                →   Scaffolds .sdlc/ directory
-/sdlc-setup              →   Interviews you, writes spec.yaml
-/sdlc-start
-                         →   Drafts requirements
+/sdlc-start              →   Interviews you, writes spec.yaml
+                             Drafts requirements
                              Opens PR: sdlc/requirements
 ⏸  Approve PR            →   Produces design.md
                              Opens PR: sdlc/design
@@ -62,110 +61,79 @@ This registers the `sdlc` CLI command and installs all skills into your agent's 
 
 ### Step 1 — Initialize your project
 
-Choose the source that matches your situation:
-
 ```bash
-# Brand new project (interactive prompts)
+# Brand new project
 sdlc init
 
 # Existing local directory
-sdlc init /path/to/project
 sdlc init .
 
-# Clone and attach a GitHub repo
+# Clone a GitHub repo
 sdlc init owner/repo
-sdlc init https://github.com/owner/repo.git
 ```
 
-`init` creates a `.sdlc/` directory inside your project with state tracking, memory files, and artifact storage. It also writes an agent context file and registers the test-failure hook in the agent's settings.
+`init` scaffolds `.sdlc/`, installs skills into your agent, and writes the agent context file.
 
 ---
 
-### Step 2 — Open your agent and run setup
+### Step 2 — Open your agent and run `/sdlc-start`
 
-Open your AI coding agent in the project directory, then run:
-
-```
-/sdlc-setup
-```
-
-**Agent-specific instructions:**
-
-| Agent | Open | Skills path | Context file | Continuous loop |
-|-------|------|-------------|--------------|-----------------|
-| **Claude Code** | `claude` in terminal | `~/.claude/commands/` | `CLAUDE.md` | `while true; do claude -p "/sdlc-orchestrate"; sleep 600; done` |
-| **Codex** | `codex` in terminal | `~/.codex/commands/` | `AGENTS.md` | `while true; do codex exec --full-auto "/sdlc-orchestrate"; sleep 600; done` |
-| **Kiro** | Open Kiro in project dir | `~/.kiro/skills/` + `~/.kiro/agents/` | `AGENT.md` | `while true; do kiro-cli chat --agent sdlc-orchestrate --no-interactive start; sleep 600; done` |
-| **Cline** | Open VS Code with Cline | `~/.cline/commands/` | `AGENT.md` | Run `/sdlc-orchestrate` manually each tick |
-
-The agent will:
-1. Analyze your codebase (if one exists) to understand the stack and conventions
-2. Interview you with 2–3 questions at a time about goals, users, constraints, and tech choices
-3. Write `.sdlc/spec.yaml` with your answers
-4. Draft an initial `requirements.md` and set the state to `requirement_ready_for_approval`
-
-At the end, the agent will tell you to review `requirements.md` and start autonomous mode when ready.
-
-If GitHub is configured, also run (in terminal):
-
-```bash
-sdlc github setup
-```
-
-This creates labels, the Projects v2 board, workflow automations, and one issue per SDLC phase — all in one command.
-
----
-
-### Step 3 — Start autonomous orchestration
+Open your agent in the project directory and run:
 
 ```
 /sdlc-start
 ```
 
-This bootstraps and launches orchestration in one shot — it detects what's already done and skips it. Under the hood it runs `/sdlc-orchestrate` and then tells you how to keep it running continuously:
+That's it. `/sdlc-start` handles everything in one shot:
+1. Detects if setup is needed — interviews you, writes `spec.yaml`, drafts requirements
+2. Launches the first orchestration tick
+3. Prints the loop command to keep it running
+
+**Agent-specific open commands:**
+
+| Agent | How to open | Skills path |
+|-------|-------------|-------------|
+| **Claude Code** | `claude` in terminal | `~/.claude/commands/` |
+| **Codex** | `codex` in terminal | `~/.codex/commands/` |
+| **Kiro** | `kiro-cli chat` in terminal | `~/.kiro/skills/` + `~/.kiro/agents/` |
+| **Cline** | Open VS Code with Cline | `~/.cline/commands/` |
+
+---
+
+### Step 3 — Run the loop
+
+After `/sdlc-start` completes, paste the loop command it gives you into a dedicated terminal tab:
 
 ```bash
 # Claude Code
 while true; do claude -p "/sdlc-orchestrate"; sleep 600; done
 
 # Codex
-while true; do codex -p "/sdlc-orchestrate"; sleep 600; done
+while true; do codex exec --full-auto "/sdlc-orchestrate"; sleep 600; done
 
 # Kiro
 while true; do kiro-cli chat --agent sdlc-orchestrate --no-interactive start; sleep 600; done
 ```
 
-Each iteration spawns a fresh agent process (no context bleed between ticks). Run this in a dedicated terminal tab.
-
-You can also run the orchestrator directly:
-```
-/sdlc-orchestrate
-```
+Each iteration is a fresh agent process — no context bleed between ticks. Leave it running and walk away.
 
 ---
 
-### Step 4 — Handle approval gates via GitHub PRs
+### Step 4 — Approve gates via GitHub PRs
 
-At each gate, the agent opens a PR and prints a message like:
+At each gate the agent opens a PR and pauses:
 
 ```
 ⏸  Requirements complete. Waiting for PR approval.
 
-What was produced:
-  • docs/sdlc/requirements.md on branch sdlc/requirements
-
 Review PR: https://github.com/owner/repo/pull/3
 
-To approve: review and approve the PR on GitHub.
-  I'll automatically detect approval on the next tick and continue.
+Approve the PR on GitHub — I'll detect it on the next tick and continue.
 ```
 
-If Slack is configured, you'll also get a webhook notification with the PR link.
+Leave review comments for feedback. The agent ingests them on approval.
 
-**To provide feedback:**
-Leave review comments on the relevant PR. The agent ingests them when it detects PR approval and applies the feedback before advancing state.
-
-**No GitHub configured?** Fall back to the terminal:
+**No GitHub?**
 ```bash
 sdlc state approve
 ```
@@ -446,19 +414,19 @@ GitHub Projects Board
 
 ## Skills Reference
 
-| Skill | When to use |
-|-------|-------------|
-| `/sdlc-start` | Bootstrap and launch orchestration in one shot |
-| `/sdlc-setup` | Once per project — initial interview and spec generation |
-| `/sdlc-orchestrate` | Every tick — the main autonomous loop |
-| `/sdlc-requirement` | Standalone requirement gathering |
-| `/sdlc-design` | Standalone system design |
-| `/sdlc-plan` | Standalone task planning |
-| `/sdlc-implement` | Standalone implementation |
-| `/sdlc-validate` | Standalone testing and validation |
-| `/sdlc-review` | Standalone code review |
-| `/sdlc-analyze-repo` | Analyze an existing codebase before setup |
-| `/sdlc-feedback` | Apply feedback from review |
+| Skill | Who uses it | When |
+|-------|-------------|------|
+| `/sdlc-start` | **You** | Once — kicks off everything |
+| `/sdlc-orchestrate` | Loop / agent | Every tick automatically |
+| `/sdlc-setup` | You (advanced) | Only to redo configuration |
+| `/sdlc-requirement` | You (advanced) | Run a single phase manually |
+| `/sdlc-design` | You (advanced) | Run a single phase manually |
+| `/sdlc-plan` | You (advanced) | Run a single phase manually |
+| `/sdlc-implement` | You (advanced) | Run a single phase manually |
+| `/sdlc-validate` | You (advanced) | Run a single phase manually |
+| `/sdlc-review` | You (advanced) | Run a single phase manually |
+| `/sdlc-analyze-repo` | You (advanced) | Analyze codebase before setup |
+| `/sdlc-feedback` | You (advanced) | Apply feedback manually |
 
 ---
 
