@@ -56,7 +56,7 @@ After it completes (or pauses at an approval gate), read `executor` from
 |----------|------------------------|
 | `claude-code` | `while true; do claude -p "/sdlc-orchestrate"; sleep 600; done` |
 | `codex`       | `while true; do codex -p "/sdlc-orchestrate"; sleep 600; done` |
-| `kiro`        | `while true; do kiro -p "/sdlc-orchestrate"; sleep 600; done` |
+| `kiro`        | `while true; do kiro-cli chat --agent sdlc-orchestrate --no-interactive start; sleep 600; done` |
 | `cline`       | Run `/sdlc-orchestrate` manually each tick in VS Code |
 
 Then say:
@@ -66,7 +66,14 @@ Then say:
 
 To run continuously (paste the command for your agent above):
 
-  while true; do <agent> -p "/sdlc-orchestrate"; sleep 600; done
+  # Claude Code
+  while true; do claude -p "/sdlc-orchestrate"; sleep 600; done
+
+  # Codex
+  while true; do codex -p "/sdlc-orchestrate"; sleep 600; done
+
+  # Kiro
+  while true; do kiro-cli chat --agent sdlc-orchestrate --no-interactive start; sleep 600; done
 
 Each iteration spawns a fresh agent process (no context bleed between ticks).
 Run this in a dedicated terminal tab and leave it running.
