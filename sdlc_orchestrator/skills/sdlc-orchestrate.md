@@ -15,6 +15,23 @@ yet approved.
 
 ---
 
+## Step -1 — First-time bootstrap (ONLY if .sdlc/ does not exist)
+
+```bash
+ls .sdlc/spec.yaml 2>/dev/null && echo "READY" || echo "FIRST_TIME"
+```
+
+- **READY** → skip to Step 0.
+- **FIRST_TIME** → run the full `sdlc-start` skill now:
+  1. `sdlc init .` — scaffold `.sdlc/`, install hooks and skills
+  2. Run `/sdlc-setup` inline — interview the developer, write `spec.yaml`,
+     draft requirements, advance state to `requirement_ready_for_approval`
+  3. Return to this skill (Step 0) once setup is complete.
+
+Do not proceed past this step until `.sdlc/spec.yaml` exists.
+
+---
+
 ## Step 0 — Acquire tick lock (FIRST THING, EVERY TIME)
 
 ```bash
