@@ -70,7 +70,7 @@ non_goals:
   - <if any>
 tech_stack: <stack>
 repo: <owner/repo or blank>
-slack_webhook: <webhook URL or blank>
+slack_webhook: ""  # set SLACK_WEBHOOK env var instead of hardcoding here
 executor: claude-code
 ```
 
