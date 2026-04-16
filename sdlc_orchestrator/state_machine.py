@@ -141,8 +141,7 @@ class WorkflowState:
             # GitHub project board (Projects v2)
             "github_project": None,          # {number, node_id, status_field_id, status_options}
             "github_epic_issue": None,       # epic issue number
-            "github_phase_items": {},        # {phase: {issue, item_id}} — board items per phase
-            "github_story_items": {},        # {STORY-001: {issue, item_id}} — per user story
+            "github_story_items": {},        # {STORY-001: {number, item_id}} — per user story
             "github_task_items": {},         # {TASK-001: {issue, item_id}} — per task
             "artifacts": {
                 "requirement_questions": None,
@@ -193,10 +192,6 @@ class WorkflowState:
     @property
     def github_epic_issue(self) -> Optional[int]:
         return self._data.get("github_epic_issue")
-
-    @property
-    def github_phase_items(self) -> dict:
-        return self._data.get("github_phase_items", {})
 
     @property
     def github_story_items(self) -> dict:
@@ -273,12 +268,6 @@ class WorkflowState:
 
     def set_github_project(self, project_info: dict) -> None:
         self._data["github_project"] = project_info
-        self.save()
-
-    def set_phase_item(self, phase: str, issue: int, item_id: str) -> None:
-        self._data.setdefault("github_phase_items", {})[phase] = {
-            "issue": issue, "item_id": item_id,
-        }
         self.save()
 
     def set_story_items(self, story_items: dict) -> None:

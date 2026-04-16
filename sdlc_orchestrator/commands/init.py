@@ -206,12 +206,16 @@ def run_analyze_skill(project_dir: Path, spec: dict) -> None:
 
 def common_setup(project_dir: Path, spec: dict, is_new: bool, upgrade_skills: bool) -> None:
     import os
+    from sdlc_orchestrator.utils import get_active_project
     console.print()
     ensure_global_memory()
     init_sdlc_dirs(project_dir)
 
-    create_symlink(project_dir)
-    console.print(f"  [green]✓[/green] symlink ~/.sdlc/projects/{project_slug(project_dir)} → .sdlc/")
+    active = get_active_project(project_dir)
+    create_symlink(project_dir, active)
+    slug = project_slug(project_dir)
+    link_name = f"{slug}-{active}" if active != "default" else slug
+    console.print(f"  [green]✓[/green] symlink ~/.sdlc/projects/{link_name} → .sdlc/projects/{active}/")
 
     executor = spec.get("executor", "claude-code")
     mem = MemoryManager(project_dir)

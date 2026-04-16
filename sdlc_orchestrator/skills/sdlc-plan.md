@@ -44,4 +44,22 @@ One GitHub issue body per task, ready to be created as children of the Epic.
 
 ---
 
+## After plan is written
+
+1. Commit and push `docs/sdlc/plan.md` on branch `sdlc/plan`
+2. Open PR: `sdlc github create-pr sdlc/plan planning`
+3. Set state: `sdlc state set task_plan_ready`
+4. Poll for approval: `sdlc github pr-status sdlc/plan`
+
+**When the plan PR is approved or merged:**
+
+```bash
+sdlc github create-task-issues        # one issue per TASK-NNN → board
+sdlc github create-story-issues       # one issue per STORY-NNN → board
+sdlc github sync-board
+```
+
+> **Do NOT call `sdlc github setup`** — that runs once at project initialisation.
+> Only call `create-task-issues` and `create-story-issues` here.
+
 When both files are written, output exactly: PHASE_COMPLETE: planning

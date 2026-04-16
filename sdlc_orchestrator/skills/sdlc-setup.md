@@ -27,6 +27,13 @@ Read `.sdlc/spec.yaml` if it exists. If fields like `description`, `tech_stack`,
 or `repo` are already filled in, use them as defaults and only ask for what's
 missing. Never re-ask for information that's already complete.
 
+> **Multi-project repos:** check which project is active first:
+> ```bash
+> sdlc project list
+> ```
+> If you need a new project: `sdlc project new <name>` — then continue setup for it.
+> If you need to switch: `sdlc project switch <name>`.
+
 ---
 
 ## Step 2 — Interview the developer
@@ -83,9 +90,8 @@ If `repo` was provided in spec.yaml, run:
 sdlc github setup
 ```
 
-This creates labels, the project board, workflow automations, and phase issues.
-It is idempotent — safe to re-run. If it fails (e.g. missing `project` scope),
-warn the user but continue — the orchestrator will retry on first tick.
+This creates labels, the project board, workflow automations, and story issues for the
+requirement, design, and planning phases. It is idempotent — safe to re-run.
 
 ---
 

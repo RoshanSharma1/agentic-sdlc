@@ -40,6 +40,10 @@ sdlc tick acquire
 
 If this exits non-zero, another tick is already running — stop immediately.
 
+> **Multi-project repos:** if this codebase has multiple SDLC projects, confirm
+> the active project before proceeding: `sdlc project list`. Switch with
+> `sdlc project switch <name>` if needed.
+
 ---
 
 ## Step 0b — Ensure GitHub is set up (ONCE per project)
@@ -48,7 +52,7 @@ If this exits non-zero, another tick is already running — stop immediately.
 sdlc github setup
 ```
 
-This is idempotent — skips anything already created (board, labels, phase issues).
+This is idempotent — skips anything already created (board, labels, pre-plan story issues).
 If `gh` is not authenticated or no repo is configured, it will warn and continue.
 
 ---
@@ -82,15 +86,17 @@ These `sdlc` commands are your state and integration layer — call them via Bas
 | `sdlc github pr-status <branch>` | Check if a phase PR is approved/merged |
 | `sdlc github ingest-feedback <branch> <phase>` | Pull PR review comments as feedback |
 | `sdlc github create-pr <branch> <phase>` | Open PR for a phase branch |
-| `sdlc github setup` | Idempotent full GitHub setup: labels, board, workflows, phase issues |
-| `sdlc github sync-board` | Move active phase issue to correct board column (also adds missing items to board, closes all on done) |
+| `sdlc github setup` | Idempotent full GitHub setup: labels, board, workflows, pre-plan story issues |
+| `sdlc github sync-board` | Move active story issue to correct board column; closes all on done |
 | `sdlc github close-merged` | Close story + task issues whose PR is merged; move board items to Done |
-| `sdlc github close-phase-issue <phase>` | Close the GitHub issue for a completed phase |
 | `sdlc story start <STORY-NNN>` | Set active story, transition to story_in_progress |
 | `sdlc story complete` | Mark story done; prints next story or all_complete |
 | `sdlc github create-story-issues` | Create one GitHub issue per STORY-NNN in plan.md |
 | `sdlc github create-task-issues` | Create one GitHub issue per TASK-NNN in plan.md |
 | `sdlc tick release` | Release tick lock (LAST THING, EVERY TIME) |
+| `sdlc project list` | List all projects and show which is active |
+| `sdlc project switch <name>` | Switch active project |
+| `sdlc project close [--next <name>]` | Close GitHub issues, move board → Done, archive state, reset for next cycle |
 
 Read and write all project files directly with your native tools. Use `sdlc`
 only for state transitions and integrations.
@@ -116,7 +122,7 @@ reviewable via PR, and persistent outside the local machine.
 
 ```
 0. sdlc tick acquire              — prevent concurrent runs (exit if locked)
-0b. sdlc github setup            — idempotent: labels, board, epic, phase issues
+0b. sdlc github setup            — idempotent: labels, board, pre-plan story issues
 1. sdlc state get                 — where am I? (read current_story, pending_stories)
 2. state == done?                 — sdlc tick release, stop, congratulate
 3. state is approval gate?
@@ -124,7 +130,6 @@ reviewable via PR, and persistent outside the local machine.
        a. sdlc github pr-status sdlc/<phase>
        b. sdlc github ingest-feedback sdlc/<phase> <phase>
        c. approved/merged?
-            → sdlc github close-phase-issue <phase>
             → sdlc state set <next-state>
             → sdlc github sync-board
             → continue to step 4
@@ -253,7 +258,6 @@ sdlc github ingest-feedback sdlc/requirements requirement
 - **approved or merged** → apply any feedback from `.sdlc/feedback/requirement.md`
   to `docs/sdlc/requirements.md`, commit and push, then:
   ```bash
-  sdlc github close-phase-issue requirement
   sdlc state set design_in_progress
   sdlc github sync-board
   ```
@@ -300,7 +304,6 @@ sdlc github ingest-feedback sdlc/design design
 - **approved or merged** → apply any feedback from `.sdlc/feedback/design.md`
   to `docs/sdlc/design.md`, commit and push, then:
   ```bash
-  sdlc github close-phase-issue design
   sdlc state set task_plan_in_progress
   sdlc github sync-board
   ```
@@ -352,9 +355,8 @@ sdlc github ingest-feedback sdlc/plan planning
 - **approved or merged** → apply any feedback from `.sdlc/feedback/planning.md`
   to `docs/sdlc/plan.md`, commit, then:
   ```bash
-  sdlc github close-phase-issue planning
-  sdlc github create-task-issues        # one issue per TASK-NNN → board, as sub-issues
-  sdlc github create-story-issues       # one issue per STORY-NNN → board (offset after phase stories); tasks auto-linked as sub-issues
+  sdlc github create-task-issues        # one issue per TASK-NNN → board
+  sdlc github create-story-issues       # one issue per STORY-NNN → board; tasks auto-linked as sub-issues
   sdlc github sync-board
   ```
   Then pick the first pending story and start it:
@@ -428,7 +430,6 @@ sdlc github ingest-feedback sdlc/<current_story> <current_story>
     Continue to `story_in_progress` instructions above.
   - `all_complete` → close out:
     ```bash
-    sdlc github close-phase-issue review
     sdlc state set done
     sdlc github sync-board    ← closes all issues, moves board to Done
     ```

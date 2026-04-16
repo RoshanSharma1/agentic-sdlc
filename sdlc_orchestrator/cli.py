@@ -6,6 +6,7 @@ from sdlc_orchestrator.commands.artifact import artifact
 from sdlc_orchestrator.commands.story import story
 from sdlc_orchestrator.commands.github import github
 from sdlc_orchestrator.commands.init import init
+from sdlc_orchestrator.commands.project import project
 from sdlc_orchestrator.commands.ops import status, notify, watch, webhook, tick, relink
 
 
@@ -16,6 +17,7 @@ def cli():
 
 
 cli.add_command(init)
+cli.add_command(project)
 cli.add_command(state)
 cli.add_command(artifact)
 cli.add_command(story)

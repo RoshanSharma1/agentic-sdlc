@@ -294,8 +294,8 @@ def set_item_status(
     return bool((data.get("updateProjectV2ItemFieldValue") or {}).get("projectV2Item"))
 
 
-def move_phase_issue(project_info: dict, item_id: str, status: str) -> bool:
-    """Move a phase issue to a named status column (e.g. 'In Progress')."""
+def _move_item(project_info: dict, item_id: str, status: str) -> bool:
+    """Move a project board item to a named status column."""
     option_id = project_info.get("status_options", {}).get(status, "")
     if not option_id or not item_id:
         return False
@@ -307,45 +307,72 @@ def move_phase_issue(project_info: dict, item_id: str, status: str) -> bool:
     )
 
 
+# keep public alias so commands/github.py callers still work during transition
+move_phase_issue = _move_item
+
+
 # ── Issues ────────────────────────────────────────────────────────────────────
 
-def create_phase_issue(
+def _create_issue(
     repo: str,
     phase: str,
     title: str,
     body: str,
     project_info: Optional[dict] = None,
+    status: str = "Backlog",
 ) -> dict:
     """
-    Create a labeled issue for a phase and add it to the project board.
+    Create a labeled issue and optionally add it to the project board.
     Returns {number, node_id, item_id}.
     """
     label = PHASE_LABEL.get(phase, "sdlc:requirement")
-    cmd = ["issue", "create", "--repo", repo, "--title", title, "--body", body,
-           "--label", label]
     try:
-        r = _gh(*cmd)
-        url = r.stdout.strip()
-        match = re.search(r"/issues/(\d+)", url)
+        r = _gh("issue", "create", "--repo", repo, "--title", title, "--body", body,
+                "--label", label)
+        match = re.search(r"/issues/(\d+)", r.stdout.strip())
         issue_number = int(match.group(1)) if match else 0
     except subprocess.CalledProcessError:
         return {}
 
     result: dict = {"number": issue_number, "node_id": "", "item_id": ""}
-
     if issue_number and project_info and project_info.get("node_id"):
         node_id = _get_issue_node_id(repo, issue_number)
         result["node_id"] = node_id
         if node_id:
             item_id = add_to_project(project_info["node_id"], node_id)
             result["item_id"] = item_id
-            # Start in Backlog
-            move_phase_issue(project_info, item_id, "Backlog")
-
+            _move_item(project_info, item_id, status)
     return result
 
 
-def create_epic(repo: str, project_name: str, body: str) -> Optional[int]:
+def create_pre_plan_story_issues(
+    repo: str,
+    project_name: str,
+    project_info: Optional[dict] = None,
+) -> dict:
+    """
+    Create story issues for the three pre-plan phases (requirement, design, planning).
+    Called once during github setup. Returns {phase: {number, item_id}}.
+    """
+    phases = [
+        ("requirement", f"Requirements: {project_name}",
+         "Tracks the requirements phase. Artifact: `docs/sdlc/requirements.md`"),
+        ("design",      f"Design: {project_name}",
+         "Tracks the system design phase. Artifact: `docs/sdlc/design.md`"),
+        ("planning",    f"Task Plan: {project_name}",
+         "Tracks the planning phase. Artifact: `docs/sdlc/plan.md`"),
+    ]
+    result = {}
+    for phase, title, body in phases:
+        info = _create_issue(
+            repo=repo, phase=phase, title=title, body=body, project_info=project_info,
+        )
+        if info.get("number"):
+            result[phase] = {"number": info["number"], "item_id": info.get("item_id", "")}
+    return result
+
+
+
     """Create the Epic issue. Returns issue number."""
     try:
         r = _gh("issue", "create", "--repo", repo,
@@ -429,28 +456,23 @@ def create_story_issues(
     stories: list[dict],
     project_info: Optional[dict] = None,
     epic_issue: Optional[int] = None,
-    story_number_offset: int = 0,
     task_issue_map: Optional[dict] = None,
 ) -> dict:
     """
     Create a GitHub issue per story, add to board, and wire task sub-issues.
-    story_number_offset: add to plan STORY-NNN index for display numbering.
-    task_issue_map: {TASK-NNN: issue_number} to link as native sub-issues.
     Returns {STORY-001: {number, item_id}, ...}
     """
     result = {}
-    for i, story in enumerate(stories):
-        display_num = i + 1 + story_number_offset
-        display_id = f"STORY-{display_num:03d}"
+    for story in stories:
         task_list = "\n".join(f"- [ ] {tid}" for tid in story["task_ids"]) or "(no tasks)"
         body = f"## Tasks\n{task_list}"
         if epic_issue:
             body += f"\n\nPart of #{epic_issue}"
 
-        info = create_phase_issue(
+        info = _create_issue(
             repo=repo,
             phase="implementation",
-            title=f"{display_id}: {story['title']}",
+            title=f"{story['id']}: {story['title']}",
             body=body,
             project_info=project_info,
         )
@@ -460,7 +482,6 @@ def create_story_issues(
         story_issue_number = info["number"]
         result[story["id"]] = {"number": story_issue_number, "item_id": info.get("item_id", "")}
 
-        # Wire task issues as native sub-issues
         if task_issue_map:
             for task_id in story["task_ids"]:
                 task_issue_num = (task_issue_map.get(task_id) or {}).get("number")
@@ -514,7 +535,7 @@ def create_task_issues(
             body += f"\n\nPart of #{epic_issue}"
         body += f"\n\n**Size:** {task['size']}"
 
-        info = create_phase_issue(
+        info = _create_issue(
             repo=repo,
             phase="implementation",
             title=f"{task['id']}: {task['title']}",
