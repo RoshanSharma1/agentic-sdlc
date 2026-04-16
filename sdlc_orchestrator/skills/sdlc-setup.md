@@ -27,6 +27,13 @@ Read `.sdlc/spec.yaml` if it exists. If fields like `description`, `tech_stack`,
 or `repo` are already filled in, use them as defaults and only ask for what's
 missing. Never re-ask for information that's already complete.
 
+> **Multi-project repos:** check which project is active first:
+> ```bash
+> sdlc project list
+> ```
+> If you need a new project: `sdlc project new <name>` — then continue setup for it.
+> If you need to switch: `sdlc project switch <name>`.
+
 ---
 
 ## Step 2 — Interview the developer

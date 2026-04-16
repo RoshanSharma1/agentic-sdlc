@@ -40,6 +40,10 @@ sdlc tick acquire
 
 If this exits non-zero, another tick is already running — stop immediately.
 
+> **Multi-project repos:** if this codebase has multiple SDLC projects, confirm
+> the active project before proceeding: `sdlc project list`. Switch with
+> `sdlc project switch <name>` if needed.
+
 ---
 
 ## Step 0b — Ensure GitHub is set up (ONCE per project)
@@ -90,6 +94,9 @@ These `sdlc` commands are your state and integration layer — call them via Bas
 | `sdlc github create-story-issues` | Create one GitHub issue per STORY-NNN in plan.md |
 | `sdlc github create-task-issues` | Create one GitHub issue per TASK-NNN in plan.md |
 | `sdlc tick release` | Release tick lock (LAST THING, EVERY TIME) |
+| `sdlc project list` | List all projects and show which is active |
+| `sdlc project switch <name>` | Switch active project |
+| `sdlc project close [--next <name>]` | Close GitHub issues, move board → Done, archive state, reset for next cycle |
 
 Read and write all project files directly with your native tools. Use `sdlc`
 only for state transitions and integrations.
