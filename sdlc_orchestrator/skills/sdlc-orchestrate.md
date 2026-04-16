@@ -7,6 +7,12 @@ project. Work continuously through phases using your native tools (Read, Write,
 Edit, Bash). Pause only when a human approval gate is reached and the PR is not
 yet approved.
 
+> **Agent-agnostic by design.** All workflow state lives in `.sdlc/` — not in
+> any agent's memory. Any supported agent (Claude Code, Codex, Kiro, Cline) can
+> pick up from the exact point another left off. To switch agents mid-project:
+> change `executor` in `.sdlc/spec.yaml` and re-run `sdlc init .` — the new
+> agent reads the same state and continues automatically.
+
 ---
 
 ## Step 0 — Acquire tick lock (FIRST THING, EVERY TIME)
@@ -61,6 +67,7 @@ These `sdlc` commands are your state and integration layer — call them via Bas
 | `sdlc github create-pr <branch> <phase>` | Open PR for a phase branch |
 | `sdlc github setup` | Idempotent full GitHub setup: labels, board, workflows, phase issues |
 | `sdlc github sync-board` | Move active phase issue to correct board column (also adds missing items to board, closes all on done) |
+| `sdlc github close-merged` | Close story + task issues whose PR is merged; move board items to Done |
 | `sdlc github close-phase-issue <phase>` | Close the GitHub issue for a completed phase |
 | `sdlc story start <STORY-NNN>` | Set active story, transition to story_in_progress |
 | `sdlc story complete` | Mark story done; prints next story or all_complete |
@@ -179,7 +186,8 @@ Each pre-plan phase follows the same pattern:
 
 ### state: requirement_in_progress
 
-You are a Business Analyst. Read `.sdlc/spec.yaml` and `CLAUDE.md`.
+You are a Business Analyst. Read `.sdlc/spec.yaml` and the agent context file
+(`CLAUDE.md`, `AGENT.md`, or `AGENTS.md` — whichever exists in the project root).
 
 1. Checkout branch: `git checkout -b sdlc/requirements` (or switch if exists)
 2. Create `docs/sdlc/` directory if needed
@@ -328,8 +336,8 @@ sdlc github ingest-feedback sdlc/plan planning
   to `docs/sdlc/plan.md`, commit, then:
   ```bash
   sdlc github close-phase-issue planning
-  sdlc github create-story-issues        # one issue per STORY-NNN → board
-  sdlc github create-task-issues         # one issue per TASK-NNN → board
+  sdlc github create-task-issues        # one issue per TASK-NNN → board, as sub-issues
+  sdlc github create-story-issues       # one issue per STORY-NNN → board (offset after phase stories); tasks auto-linked as sub-issues
   sdlc github sync-board
   ```
   Then pick the first pending story and start it:
@@ -351,22 +359,28 @@ You are a Senior Developer. One story at a time — read `current_story` from
 `sdlc state get`.
 
 1. Read the story's tasks from `docs/sdlc/plan.md` (tasks grouped under this story)
-2. Checkout branch: `git checkout -b sdlc/<current_story>` (e.g. `sdlc/story-001`)
+2. Look up the story's GitHub issue number from `sdlc state get` (`github_story_items`)
+   and each task's issue number (`github_task_items`). You'll use these in commits and PRs.
+3. Checkout branch: `git checkout -b sdlc/<current_story>` (e.g. `sdlc/story-001`)
    Create from main if it doesn't exist; switch to it if it does.
-3. For each `[ ] pending` task under this story, in dependency order:
+4. For each `[ ] pending` task under this story, in dependency order:
    - Implement following `docs/sdlc/design.md` exactly
    - Write unit tests (TDD preferred)
    - Run tests — fix all failures before moving on
-   - Commit: `git add <files> && git commit -m "feat(TASK-NNN): <title>"`
+   - Commit referencing the task issue:
+     ```
+     git add <files>
+     git commit -m "feat(TASK-NNN): <title> (closes #<task-issue-number>)"
+     ```
    - Mark done in plan.md: `[x] done` (commit this too)
-4. Run the full test suite — fix every failure; do not skip or weaken assertions
-5. Run linting and type checks — fix all errors
-6. If tests still fail after 3 attempts: `sdlc state set blocked` and explain clearly
-7. Push branch and open PR:
+5. Run the full test suite — fix every failure; do not skip or weaken assertions
+6. Run linting and type checks — fix all errors
+7. If tests still fail after 3 attempts: `sdlc state set blocked` and explain clearly
+8. Push branch and open PR (PR body auto-includes `Closes #<story-issue>`):
    ```bash
    sdlc github create-pr sdlc/<current_story> <current_story>
    ```
-8. Transition:
+9. Transition:
    ```bash
    sdlc state set story_awaiting_review
    sdlc github sync-board
@@ -385,7 +399,8 @@ sdlc github ingest-feedback sdlc/<current_story> <current_story>
 
 - **approved or merged:**
   ```bash
-  sdlc story complete       # prints "next: STORY-NNN" or "all_complete"
+  sdlc github close-merged          # close story + task issues for merged PRs, move board to Done
+  sdlc story complete               # prints "next: STORY-NNN" or "all_complete"
   sdlc github sync-board
   ```
   - `next: STORY-NNN` → start the next story:

@@ -400,18 +400,48 @@ def parse_plan_stories(plan_text: str) -> list[dict]:
     return stories
 
 
+def add_sub_issue(repo: str, parent_number: int, child_id: int) -> bool:
+    """Add child_id (database id) as a native sub-issue of parent_number."""
+    r = subprocess.run(
+        ["gh", "api", "--method", "POST",
+         f"repos/{repo}/issues/{parent_number}/sub_issues",
+         "--input", "-"],
+        input=json.dumps({"sub_issue_id": child_id, "replace_parent": True}),
+        capture_output=True, text=True,
+    )
+    try:
+        return "number" in json.loads(r.stdout)
+    except (json.JSONDecodeError, KeyError):
+        return False
+
+
+def get_issue_db_id(repo: str, issue_number: int) -> Optional[int]:
+    """Return the database (integer) id of an issue."""
+    try:
+        r = _gh("api", f"repos/{repo}/issues/{issue_number}", "--jq", ".id")
+        return int(r.stdout.strip())
+    except (subprocess.CalledProcessError, ValueError):
+        return None
+
+
 def create_story_issues(
     repo: str,
     stories: list[dict],
     project_info: Optional[dict] = None,
     epic_issue: Optional[int] = None,
+    story_number_offset: int = 0,
+    task_issue_map: Optional[dict] = None,
 ) -> dict:
     """
-    Create a GitHub issue per story and add to the project board.
+    Create a GitHub issue per story, add to board, and wire task sub-issues.
+    story_number_offset: add to plan STORY-NNN index for display numbering.
+    task_issue_map: {TASK-NNN: issue_number} to link as native sub-issues.
     Returns {STORY-001: {number, item_id}, ...}
     """
     result = {}
-    for story in stories:
+    for i, story in enumerate(stories):
+        display_num = i + 1 + story_number_offset
+        display_id = f"STORY-{display_num:03d}"
         task_list = "\n".join(f"- [ ] {tid}" for tid in story["task_ids"]) or "(no tasks)"
         body = f"## Tasks\n{task_list}"
         if epic_issue:
@@ -420,12 +450,25 @@ def create_story_issues(
         info = create_phase_issue(
             repo=repo,
             phase="implementation",
-            title=f"{story['id']}: {story['title']}",
+            title=f"{display_id}: {story['title']}",
             body=body,
             project_info=project_info,
         )
-        if info.get("number"):
-            result[story["id"]] = {"number": info["number"], "item_id": info.get("item_id", "")}
+        if not info.get("number"):
+            continue
+
+        story_issue_number = info["number"]
+        result[story["id"]] = {"number": story_issue_number, "item_id": info.get("item_id", "")}
+
+        # Wire task issues as native sub-issues
+        if task_issue_map:
+            for task_id in story["task_ids"]:
+                task_issue_num = (task_issue_map.get(task_id) or {}).get("number")
+                if task_issue_num:
+                    child_db_id = get_issue_db_id(repo, task_issue_num)
+                    if child_db_id:
+                        add_sub_issue(repo, story_issue_number, child_db_id)
+
     return result
 
 
@@ -483,7 +526,65 @@ def create_task_issues(
     return result
 
 
-# ── Pull Requests ─────────────────────────────────────────────────────────────
+# ── Merged PR → close story + task issues ────────────────────────────────────
+
+def close_merged_pr_issues(
+    repo: str,
+    story_items: dict,
+    task_items: dict,
+    project_info: Optional[dict] = None,
+) -> list[str]:
+    """
+    For every story whose PR branch is merged:
+      - close the story issue
+      - close all its task issues
+      - move story + task board items to Done
+    Returns list of story IDs that were closed.
+    """
+    closed = []
+    for story_id, info in story_items.items():
+        branch = f"sdlc/{story_id.lower().replace('_', '-')}"  # e.g. sdlc/story-001
+        status = get_pr_status(repo, branch)
+        if status not in ("merged", "approved"):
+            continue
+
+        story_issue = info.get("number") or info.get("issue")
+        story_item_id = info.get("item_id", "")
+
+        # Close story issue
+        if story_issue:
+            close_issue(repo, story_issue, comment=f"Closed automatically — PR for {story_id} merged.")
+
+        # Move story board item to Done
+        if project_info and story_item_id:
+            move_phase_issue(project_info, story_item_id, "Done")
+
+        # Close task issues that belong to this story (infer from task branch or item map)
+        # task_items keys are TASK-NNN; we match by checking plan story membership via issue body
+        # Simpler: close all tasks whose parent_issue_url points to this story issue
+        if story_issue:
+            for task_id, tinfo in task_items.items():
+                task_issue = tinfo.get("number") or tinfo.get("issue")
+                task_item_id = tinfo.get("item_id", "")
+                if not task_issue:
+                    continue
+                # Check if this task is a sub-issue of the story
+                try:
+                    r = _gh("api", f"repos/{repo}/issues/{task_issue}",
+                            "--jq", ".parent_issue_url")
+                    if f"/issues/{story_issue}" in r.stdout:
+                        close_issue(repo, task_issue,
+                                    comment=f"Closed automatically — {story_id} PR merged.")
+                        if project_info and task_item_id:
+                            move_phase_issue(project_info, task_item_id, "Done")
+                except subprocess.CalledProcessError:
+                    pass
+
+        closed.append(story_id)
+    return closed
+
+
+
 
 def create_pr(
     repo: str,
@@ -492,10 +593,14 @@ def create_pr(
     body: str,
     base: str = "main",
     closes_issue: Optional[int] = None,
+    closes_issues: Optional[list] = None,
 ) -> Optional[str]:
     """Create a PR for a phase. Returns PR URL or None."""
+    all_closes = list(closes_issues or [])
     if closes_issue:
-        body += f"\n\nCloses #{closes_issue}"
+        all_closes.append(closes_issue)
+    if all_closes:
+        body += "\n\n" + "\n".join(f"Closes #{n}" for n in all_closes)
     try:
         r = _gh(
             "pr", "create",

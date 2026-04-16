@@ -126,8 +126,19 @@ def _ensure_global_memory() -> None:
                 "- No secrets in code\n"
             )
 
-def _install_global_skills(force: bool = False) -> None:
-    dest_dir = Path.home() / ".claude" / "commands"
+def _trigger_agent(project_dir: Path, skill: str = "sdlc-orchestrate") -> subprocess.CompletedProcess | None:
+    """Spawn a headless agent tick for the project's configured executor.
+    Returns None if the executor has no headless CLI (e.g. cline)."""
+    from sdlc_orchestrator.memory import EXECUTOR_CLI, MemoryManager
+    spec = MemoryManager(project_dir).spec()
+    executor = spec.get("executor", "claude-code")
+    cmd_template = EXECUTOR_CLI.get(executor, EXECUTOR_CLI["claude-code"])
+    if not cmd_template:
+        return None
+    cmd = [part.replace("{skill}", skill) for part in cmd_template]
+    return subprocess.run(cmd, cwd=str(project_dir))
+    from sdlc_orchestrator.memory import executor_config
+    _, dest_dir, _ = executor_config(executor)
     dest_dir.mkdir(parents=True, exist_ok=True)
     from importlib.resources import files as _files
     try:
@@ -136,14 +147,17 @@ def _install_global_skills(force: bool = False) -> None:
             dest = dest_dir / skill_file.name
             if not dest.exists() or force:
                 dest.write_text(skill_file.read_text(encoding="utf-8"))
-                console.print(f"  [dim]skill:[/dim] ~/.claude/commands/{skill_file.name}")
+                console.print(f"  [dim]skill:[/dim] {dest_dir}/{skill_file.name}")
     except Exception as e:
         console.print(f"  [yellow]Skill install warning: {e}[/yellow]")
 
-def _write_hooks(project_dir: Path) -> None:
+def _write_hooks(project_dir: Path, executor: str = "claude-code") -> None:
     import json
-    claude_dir = project_dir / ".claude"
-    claude_dir.mkdir(exist_ok=True)
+    from sdlc_orchestrator.memory import executor_config
+    _, _, settings_rel = executor_config(executor)
+    # settings_rel is a relative Path like Path(".claude") — make it absolute
+    agent_dir = project_dir / settings_rel
+    agent_dir.mkdir(exist_ok=True)
     settings = {
         "hooks": {
             "PostToolUse": [
@@ -154,7 +168,7 @@ def _write_hooks(project_dir: Path) -> None:
             ],
         }
     }
-    (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2))
+    (agent_dir / "settings.json").write_text(json.dumps(settings, indent=2))
 
 def _init_sdlc_dirs(project_dir: Path) -> None:
     home = sdlc_home(project_dir)
@@ -163,15 +177,15 @@ def _init_sdlc_dirs(project_dir: Path) -> None:
 
 def _set_initial_state(project_dir: Path, phase: str) -> None:
     phase_map = {
-        "requirement":    State.DRAFT_REQUIREMENT,
+        "requirement":    State.REQUIREMENT_IN_PROGRESS,
         "design":         State.DESIGN_IN_PROGRESS,
         "planning":       State.TASK_PLAN_IN_PROGRESS,
-        "implementation": State.IMPLEMENTATION_IN_PROGRESS,
-        "validation":     State.TEST_FAILURE_LOOP,
-        "review":         State.AWAITING_REVIEW,
+        "implementation": State.STORY_IN_PROGRESS,
+        "validation":     State.STORY_IN_PROGRESS,
+        "review":         State.STORY_AWAITING_REVIEW,
     }
     wf = WorkflowState(project_dir)
-    wf._data["state"] = phase_map.get(phase, State.DRAFT_REQUIREMENT).value
+    wf._data["state"] = phase_map.get(phase, State.REQUIREMENT_IN_PROGRESS).value
     wf.save()
 
 def _detect_starting_phase(project_dir: Path) -> str:
@@ -195,25 +209,27 @@ def _setup_github_board(project_dir: Path, spec: dict) -> None:
         console.print("  [yellow]GitHub board skipped (check gh auth scope: project)[/yellow]")
 
 def _run_analyze_skill(project_dir: Path, spec: dict) -> None:
-    skill_path = Path.home() / ".claude" / "commands" / "sdlc-analyze-repo.md"
+    from sdlc_orchestrator.memory import executor_config
+    executor = spec.get("executor", "claude-code")
+    _, skills_dir, _ = executor_config(executor)
+    skill_path = skills_dir / "sdlc-analyze-repo.md"
     if not skill_path.exists():
-        _install_global_skills()
+        _install_global_skills(executor=executor)
     prompt = skill_path.read_text() if skill_path.exists() else (
         "Analyze this repo. Write .sdlc/memory/project.md covering stack, "
         "architecture, domain concepts, testing, tech debt, deployment."
     )
     prompt = prompt.replace("{{PROJECT_NAME}}", spec.get("project_name", ""))
     try:
-        result = subprocess.run(
-            ["claude", "-p", "--dangerously-skip-permissions"],
-            input=prompt, capture_output=True, text=True, cwd=str(project_dir), timeout=900,
-        )
-        if result.returncode == 0:
+        result = _trigger_agent(project_dir, skill="sdlc-analyze-repo")
+        if result is None:
+            console.print("  [yellow]Repo analysis skipped (executor has no headless CLI)[/yellow]")
+        elif result.returncode == 0:
             console.print("  [green]✓[/green] Repo analysis complete")
         else:
             console.print("  [yellow]Repo analysis had warnings — edit .sdlc/memory/project.md[/yellow]")
     except Exception:
-        console.print("  [yellow]Repo analysis skipped (claude CLI not found)[/yellow]")
+        console.print("  [yellow]Repo analysis skipped (agent CLI not found)[/yellow]")
 
 def _open_in_editor(path: Path) -> None:
     import os
@@ -232,6 +248,8 @@ def _common_setup(project_dir: Path, spec: dict, is_new: bool, upgrade_skills: b
 
     link = create_symlink(project_dir)
     console.print(f"  [green]✓[/green] symlink ~/.sdlc/projects/{project_slug(project_dir)} → .sdlc/")
+
+    executor = spec.get("executor", "claude-code")
 
     mem = MemoryManager(project_dir)
     mem.write_spec(spec)
@@ -257,16 +275,19 @@ def _common_setup(project_dir: Path, spec: dict, is_new: bool, upgrade_skills: b
             mem.regenerate_claude_md()
 
     mem.regenerate_claude_md()
-    console.print("  [green]✓[/green] CLAUDE.md")
+    context_filename = mem.context_file_path.name
+    console.print(f"  [green]✓[/green] {context_filename}")
 
     WorkflowState(project_dir).save()
     console.print("  [green]✓[/green] .sdlc/workflow/state.json")
 
-    _write_hooks(project_dir)
-    console.print("  [green]✓[/green] .claude/settings.json")
+    from sdlc_orchestrator.memory import executor_config
+    _, skills_dir, settings_rel = executor_config(executor)
+    _write_hooks(project_dir, executor)
+    console.print(f"  [green]✓[/green] {settings_rel}/settings.json")
 
-    _install_global_skills(force=upgrade_skills)
-    console.print("  [green]✓[/green] skills → ~/.claude/commands/  (including /sdlc-orchestrate)")
+    _install_global_skills(force=upgrade_skills, executor=executor)
+    console.print(f"  [green]✓[/green] skills → {skills_dir}/  (including /sdlc-orchestrate)")
 
     update_gitignore(project_dir)
     console.print("  [green]✓[/green] .gitignore")
@@ -279,11 +300,11 @@ def _common_setup(project_dir: Path, spec: dict, is_new: bool, upgrade_skills: b
   cd {project_dir}
 
   Next steps:
-    1. Open Claude Code in this directory
-    2. Run [bold]/sdlc-setup[/bold] — Claude interviews you and drafts requirements
-    3. Review requirements, then run [bold]/loop 10m /sdlc-orchestrate[/bold]
+    1. Open your agent ({executor}) in this directory
+    2. Run [bold]/sdlc-setup[/bold] — agent interviews you and drafts requirements
+    3. Review requirements, then run [bold]/sdlc-start[/bold]
 
-  Claude drives the rest. You'll get Slack pings at each approval gate.
+  The agent drives the rest. You'll get Slack pings at each approval gate.
 """)
 
 
@@ -611,17 +632,37 @@ def github_create_pr(branch, phase):
         click.echo("No repo in spec.yaml", err=True)
         sys.exit(1)
 
-    # Push branch first
     subprocess.run(["git", "push", "-u", "origin", branch], cwd=project_dir, capture_output=True)
+
+    wf = WorkflowState(project_dir)
+
+    # Collect issues this PR closes: story issue + its task issues
+    closes: list[int] = []
+    story_item = wf.github_story_items.get(phase, {})  # phase may be STORY-NNN
+    if story_item.get("number"):
+        closes.append(story_item["number"])
+    # Also close task issues belonging to this story (from plan.md task_ids)
+    from sdlc_orchestrator.integrations import github as gh_mod
+    plan_path = project_dir / "docs/sdlc/plan.md"
+    if plan_path.exists():
+        stories = gh_mod.parse_plan_stories(plan_path.read_text())
+        for s in stories:
+            if s["id"] == phase:
+                for task_id in s["task_ids"]:
+                    t = wf.github_task_items.get(task_id, {})
+                    if t.get("number"):
+                        closes.append(t["number"])
+                break
 
     from sdlc_orchestrator.integrations.github import create_pr
     url = create_pr(
         repo=repo, phase=phase, branch=branch,
         body=(
             f"## SDLC Phase: `{phase}`\n\n"
-            f"Automated output. Review then run `sdlc state approve`.\n\n"
+            f"Automated output. Review then approve.\n\n"
             f"> Generated by /sdlc-orchestrate"
         ),
+        closes_issues=closes,
     )
     click.echo(url or "PR creation skipped (may already exist)")
 
@@ -819,6 +860,16 @@ def github_sync_board():
         click.echo("skipped: no repo or project board configured")
         return
 
+    # Auto-close issues for any merged story PRs
+    closed = gh.close_merged_pr_issues(
+        repo=repo,
+        story_items=wf.github_story_items,
+        task_items=wf.github_task_items,
+        project_info=project_info,
+    )
+    if closed:
+        click.echo(f"auto-closed merged stories: {', '.join(closed)}")
+
     board_status, phase = STATE_BOARD.get(wf.state.value, ("In Progress", ""))
 
     def _ensure_phase_on_board(item: dict, p: str) -> str:
@@ -902,7 +953,38 @@ def github_sync_board():
     click.echo(f"{'synced' if ok else 'failed'}: {phase} → {board_status}")
 
 
-@github.command("create-task-issues")
+@github.command("close-merged")
+def github_close_merged():
+    """Close story + task issues whose PR branch is merged. Called by sync-board automatically.
+
+    For each story in github_story_items whose sdlc/story-NNN PR is merged:
+      - closes the story GitHub issue
+      - closes all sub-task GitHub issues
+      - moves story + task board items to Done
+    """
+    from sdlc_orchestrator.integrations import github as gh
+
+    project_dir = _require_project()
+    spec = MemoryManager(project_dir).spec()
+    repo = spec.get("repo", "")
+    wf = WorkflowState(project_dir)
+
+    if not repo:
+        click.echo("skipped: no repo configured")
+        return
+
+    closed = gh.close_merged_pr_issues(
+        repo=repo,
+        story_items=wf.github_story_items,
+        task_items=wf.github_task_items,
+        project_info=wf.github_project,
+    )
+    if closed:
+        click.echo(f"closed: {', '.join(closed)}")
+    else:
+        click.echo("no merged story PRs found")
+
+
 @click.argument("plan_file", default="docs/sdlc/plan.md")
 def github_create_task_issues(plan_file):
     """Parse plan.md and create one GitHub issue per task, added to the board.
@@ -992,11 +1074,15 @@ def github_create_story_issues(plan_file):
         return
 
     console.print(f"  Creating {len(new_stories)} story issue(s)...")
+    # Offset so plan STORY-001 becomes STORY-004 if 3 phase stories already exist
+    phase_story_count = len([p for p in wf.github_phase_items if wf.github_phase_items[p].get("issue")])
     created = gh.create_story_issues(
         repo=repo,
         stories=new_stories,
         project_info=project_info,
         epic_issue=wf.github_epic_issue,
+        story_number_offset=phase_story_count,
+        task_issue_map=wf.github_task_items,
     )
     wf.set_story_items(created)
 
@@ -1145,13 +1231,12 @@ def watch(interval):
                 last_pr_status = pr_status
 
             if pr_status in ("approved", "merged"):
-                console.print(f"\n[green]✓ PR approved[/green] — triggering Claude to continue...")
-                result = subprocess.run(
-                    ["claude", "-p", "--dangerously-skip-permissions", "/sdlc-orchestrate"],
-                    cwd=str(project_dir),
-                )
-                if result.returncode != 0:
-                    console.print("[yellow]Claude exited with an error — check Claude Code output.[/yellow]")
+                console.print(f"\n[green]✓ PR approved[/green] — triggering agent to continue...")
+                result = _trigger_agent(project_dir)
+                if result is None:
+                    console.print("[yellow]Executor has no headless CLI — open your agent and run /sdlc-orchestrate manually.[/yellow]")
+                elif result.returncode != 0:
+                    console.print("[yellow]Agent exited with an error.[/yellow]")
                 last_pr_status = ""  # Reset so we re-evaluate next state
 
             time.sleep(interval)
@@ -1243,10 +1328,9 @@ def webhook(port, secret):
             self.wfile.write(b"ok")
 
             if triggered:
-                subprocess.Popen(
-                    ["claude", "-p", "--dangerously-skip-permissions", "/sdlc-orchestrate"],
-                    cwd=str(project_dir),
-                )
+                result = _trigger_agent(project_dir)
+                if result is None:
+                    console.print("[yellow]Executor has no headless CLI — open your agent and run /sdlc-orchestrate manually.[/yellow]")
 
         def do_GET(self):
             if self.path == "/health":

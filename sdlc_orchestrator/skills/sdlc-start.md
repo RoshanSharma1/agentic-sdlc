@@ -33,7 +33,7 @@ sdlc state get
 
 Setup is **already done** if ALL of the following are true:
 - `spec.yaml` has a non-empty `description` field
-- `state` is anything other than `draft_requirement`
+- `state` is anything other than `requirement_in_progress`
 
 **If already done:** skip to Step 3.
 
@@ -49,19 +49,29 @@ complete.
 Setup is complete. Run the `sdlc-orchestrate` skill now to execute the first
 autonomous tick.
 
-After it completes (or pauses at an approval gate), tell the developer:
+After it completes (or pauses at an approval gate), read `executor` from
+`.sdlc/spec.yaml` and tell the developer the correct continuous-loop command:
+
+| executor | continuous loop command |
+|----------|------------------------|
+| `claude-code` | `while true; do claude -p "/sdlc-orchestrate"; sleep 600; done` |
+| `codex`       | `while true; do codex -p "/sdlc-orchestrate"; sleep 600; done` |
+| `kiro`        | `while true; do kiro -p "/sdlc-orchestrate"; sleep 600; done` |
+| `cline`       | Run `/sdlc-orchestrate` manually each tick in VS Code |
+
+Then say:
 
 ```
 ✓ SDLC orchestration started.
 
-To run continuously with a clean context on every tick:
+To run continuously (paste the command for your agent above):
 
-  while true; do claude -p "/sdlc-orchestrate"; sleep 600; done
+  while true; do <agent> -p "/sdlc-orchestrate"; sleep 600; done
 
-Each iteration spawns a fresh Claude process (no context bleed between ticks).
+Each iteration spawns a fresh agent process (no context bleed between ticks).
 Run this in a dedicated terminal tab and leave it running.
 
-Claude will pause and notify you at each approval gate.
+The agent will pause and notify you at each approval gate.
 To approve a gate:
   sdlc state approve
 ```
