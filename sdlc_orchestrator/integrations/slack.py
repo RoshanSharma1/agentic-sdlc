@@ -69,6 +69,7 @@ def send(webhook_url: str, phase: str, event: str,
 
 
 def notify_from_spec(spec: dict, phase: str, event: str, extra: str = "") -> None:
-    webhook = spec.get("slack_webhook", "")
+    import os
+    webhook = spec.get("slack_webhook", "") or os.environ.get("SLACK_WEBHOOK", "")
     if webhook:
         send(webhook, phase, event, spec.get("project_name", ""), extra)
