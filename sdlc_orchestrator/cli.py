@@ -129,14 +129,26 @@ def _ensure_global_memory() -> None:
 def _trigger_agent(project_dir: Path, skill: str = "sdlc-orchestrate") -> subprocess.CompletedProcess | None:
     """Spawn a headless agent tick for the project's configured executor.
     Returns None if the executor has no headless CLI (e.g. cline)."""
-    from sdlc_orchestrator.memory import EXECUTOR_CLI, MemoryManager
+    from sdlc_orchestrator.memory import EXECUTOR_CLI, MemoryManager, executor_config
     spec = MemoryManager(project_dir).spec()
     executor = spec.get("executor", "claude-code")
     cmd_template = EXECUTOR_CLI.get(executor, EXECUTOR_CLI["claude-code"])
     if not cmd_template:
         return None
-    cmd = [part.replace("{skill}", skill) for part in cmd_template]
+
+    if executor == "codex":
+        # Codex has no slash commands — pass skill file content as the prompt
+        _, skills_dir, _ = executor_config(executor)
+        skill_file = skills_dir / f"{skill}.md"
+        prompt = skill_file.read_text() if skill_file.exists() else skill
+        cmd = [part.replace("{skill}", prompt) for part in cmd_template]
+    else:
+        cmd = [part.replace("{skill}", skill) for part in cmd_template]
+
     return subprocess.run(cmd, cwd=str(project_dir))
+
+
+def _install_global_skills(force: bool = False, executor: str = "claude-code") -> None:
     from sdlc_orchestrator.memory import executor_config
     _, dest_dir, _ = executor_config(executor)
     dest_dir.mkdir(parents=True, exist_ok=True)

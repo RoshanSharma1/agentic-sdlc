@@ -34,7 +34,7 @@ DEFAULT_EXECUTOR = "claude-code"
 # {skill} is replaced with the skill name (e.g. "sdlc-orchestrate").
 EXECUTOR_CLI: dict[str, list[str]] = {
     "claude-code": ["claude", "-p", "--dangerously-skip-permissions", "/{skill}"],
-    "codex":       ["codex",  "-p", "/{skill}"],
+    "codex":       ["codex", "exec", "--full-auto", "{skill}"],
     "kiro":        ["kiro-cli", "chat", "--agent", "{skill}", "--no-interactive", "start"],
     "cline":       [],  # Cline has no headless CLI — must be triggered manually
 }

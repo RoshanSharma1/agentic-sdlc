@@ -55,7 +55,7 @@ After it completes (or pauses at an approval gate), read `executor` from
 | executor | continuous loop command |
 |----------|------------------------|
 | `claude-code` | `while true; do claude -p "/sdlc-orchestrate"; sleep 600; done` |
-| `codex`       | `while true; do codex -p "/sdlc-orchestrate"; sleep 600; done` |
+| `codex`       | `while true; do codex exec --full-auto "/sdlc-orchestrate"; sleep 600; done` |
 | `kiro`        | `while true; do kiro-cli chat --agent sdlc-orchestrate --no-interactive start; sleep 600; done` |
 | `cline`       | Run `/sdlc-orchestrate` manually each tick in VS Code |
 
@@ -70,7 +70,7 @@ To run continuously (paste the command for your agent above):
   while true; do claude -p "/sdlc-orchestrate"; sleep 600; done
 
   # Codex
-  while true; do codex -p "/sdlc-orchestrate"; sleep 600; done
+  while true; do codex exec --full-auto "/sdlc-orchestrate"; sleep 600; done
 
   # Kiro
   while true; do kiro-cli chat --agent sdlc-orchestrate --no-interactive start; sleep 600; done

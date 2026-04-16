@@ -94,7 +94,7 @@ Open your AI coding agent in the project directory, then run:
 | Agent | Open | Skills path | Context file | Continuous loop |
 |-------|------|-------------|--------------|-----------------|
 | **Claude Code** | `claude` in terminal | `~/.claude/commands/` | `CLAUDE.md` | `while true; do claude -p "/sdlc-orchestrate"; sleep 600; done` |
-| **Codex** | `codex` in terminal | `~/.codex/commands/` | `AGENTS.md` | `while true; do codex -p "/sdlc-orchestrate"; sleep 600; done` |
+| **Codex** | `codex` in terminal | `~/.codex/commands/` | `AGENTS.md` | `while true; do codex exec --full-auto "/sdlc-orchestrate"; sleep 600; done` |
 | **Kiro** | Open Kiro in project dir | `~/.kiro/skills/` + `~/.kiro/agents/` | `AGENT.md` | `while true; do kiro-cli chat --agent sdlc-orchestrate --no-interactive start; sleep 600; done` |
 | **Cline** | Open VS Code with Cline | `~/.cline/commands/` | `AGENT.md` | Run `/sdlc-orchestrate` manually each tick |
 
