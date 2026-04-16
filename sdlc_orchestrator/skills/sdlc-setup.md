@@ -83,9 +83,8 @@ If `repo` was provided in spec.yaml, run:
 sdlc github setup
 ```
 
-This creates labels, the project board, workflow automations, and phase issues.
-It is idempotent — safe to re-run. If it fails (e.g. missing `project` scope),
-warn the user but continue — the orchestrator will retry on first tick.
+This creates labels, the project board, workflow automations, and story issues for the
+requirement, design, and planning phases. It is idempotent — safe to re-run.
 
 ---
 

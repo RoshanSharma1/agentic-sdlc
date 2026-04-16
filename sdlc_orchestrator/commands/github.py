@@ -123,7 +123,7 @@ def github_ingest_feedback(branch, phase):
 
 @github.command("setup")
 def github_setup():
-    """Full GitHub setup: labels, project board, workflows, and phase issues."""
+    """Full GitHub setup: labels, project board, workflows, and pre-plan story issues."""
     from sdlc_orchestrator.integrations import github as gh
 
     project_dir = require_project()
@@ -171,43 +171,23 @@ def github_setup():
         else:
             console.print("  [dim]Workflows may already be enabled or require manual setup in GitHub UI.[/dim]")
 
-    # Epic issue
-    if wf.github_epic_issue:
-        console.print(f"  [dim]Epic #{wf.github_epic_issue} already exists — skipped[/dim]")
+    # Pre-plan story issues (requirement, design, planning) — created once at setup
+    existing = wf.github_story_items
+    pre_plan_phases = {"requirement", "design", "planning"}
+    if any(p in existing for p in pre_plan_phases):
+        console.print("  [dim]Pre-plan story issues already exist — skipped[/dim]")
     else:
-        console.print("  Creating epic issue...")
-        epic_body = (
-            f"**{project_name}**\n\n{spec.get('description', '')}\n\n"
-            f"This epic tracks all SDLC phases for this project."
-        )
-        epic_number = gh.create_epic(repo, project_name, epic_body)
-        if epic_number:
-            wf.set_github(epic_issue=epic_number)
-            console.print(f"  [green]✓[/green] Epic #{epic_number}")
-        else:
-            console.print("  [yellow]Epic creation failed — continuing[/yellow]")
-
-    # Phase issues
-    console.print("  Creating phase issues...")
-    phases = [
-        ("requirement",    "[sdlc:requirement] Requirements"),
-        ("design",         "[sdlc:design] System Design"),
-        ("planning",       "[sdlc:plan] Task Plan"),
-        ("implementation", "[sdlc:implementation] Implementation"),
-        ("testing",        "[sdlc:testing] Testing & Validation"),
-        ("review",         "[sdlc:review] Code Review"),
-    ]
-    for phase, title in phases:
-        if wf.github_phase_items.get(phase):
-            continue
-        info = gh.create_phase_issue(
-            repo=repo, phase=phase, title=title,
-            body=f"Tracks the **{phase}** phase of {project_name}.\n\nArtifact will be linked when this phase begins.",
-            project_info=project_info,
-        )
-        if info.get("number"):
-            wf.set_phase_item(phase, info["number"], info.get("item_id", ""))
-            console.print(f"  [green]✓[/green] #{info['number']} {title}")
+        console.print("  Creating pre-plan story issues (requirement, design, planning)...")
+        try:
+            created_stories = gh.create_pre_plan_story_issues(repo, project_name, project_info)
+            if created_stories:
+                wf.set_story_items(created_stories)
+                for phase, info in created_stories.items():
+                    console.print(f"  [green]✓[/green] #{info['number']} {phase}")
+            else:
+                console.print("  [yellow]Pre-plan story issue creation failed — continuing (local state will be used)[/yellow]")
+        except Exception as e:
+            console.print(f"  [yellow]Pre-plan story issues skipped: {e}[/yellow]")
 
     console.print("\n[bold green]GitHub setup complete.[/bold green]")
     if project_info:
@@ -218,20 +198,8 @@ def github_setup():
 
 @github.command("sync-board")
 def github_sync_board():
-    """Move the active phase issue to the correct board column based on current state."""
+    """Move the active story issue to the correct board column based on current state."""
     from sdlc_orchestrator.integrations import github as gh
-
-    STATE_BOARD: dict[str, tuple[str, str]] = {
-        "requirement_in_progress":        ("In Progress",     "requirement"),
-        "requirement_ready_for_approval": ("Awaiting Review", "requirement"),
-        "design_in_progress":             ("In Progress",     "design"),
-        "awaiting_design_approval":       ("Awaiting Review", "design"),
-        "task_plan_in_progress":          ("In Progress",     "planning"),
-        "task_plan_ready":                ("Awaiting Review", "planning"),
-        "feedback_incorporation":         ("In Progress",     ""),
-        "blocked":                        ("Blocked",         ""),
-        "done":                           ("Done",            ""),
-    }
 
     project_dir = require_project()
     spec = MemoryManager(project_dir).spec()
@@ -243,6 +211,7 @@ def github_sync_board():
         click.echo("skipped: no repo or project board configured")
         return
 
+    # Close issues for merged story PRs
     closed = gh.close_merged_pr_issues(
         repo=repo,
         story_items=wf.github_story_items,
@@ -252,80 +221,51 @@ def github_sync_board():
     if closed:
         click.echo(f"auto-closed merged stories: {', '.join(closed)}")
 
-    board_status, phase = STATE_BOARD.get(wf.state.value, ("In Progress", ""))
+    state_val = wf.state.value
 
-    def _ensure_phase_on_board(item: dict, p: str) -> str:
-        item_id = item.get("item_id", "")
-        issue_number = item.get("issue")
-        if not item_id and issue_number and project_info:
-            node_id = gh._get_issue_node_id(repo, issue_number)
-            if node_id:
-                item_id = gh.add_to_project(project_info["node_id"], node_id)
-                if item_id:
-                    wf.set_phase_item(p, issue_number, item_id)
-                    click.echo(f"added #{issue_number} to board")
-        return item_id
-
-    def _ensure_story_on_board(story_id: str, item: dict) -> str:
-        item_id = item.get("item_id", "")
-        issue_number = item.get("number") or item.get("issue")
-        if not item_id and issue_number and project_info:
-            node_id = gh._get_issue_node_id(repo, issue_number)
-            if node_id:
-                item_id = gh.add_to_project(project_info["node_id"], node_id)
-                if item_id:
-                    wf.set_story_items({story_id: {"number": issue_number, "item_id": item_id}})
-                    click.echo(f"added #{issue_number} ({story_id}) to board")
-        return item_id
-
-    if wf.state.value == "done":
-        for p, item in wf.github_phase_items.items():
-            item_id = _ensure_phase_on_board(item, p)
-            if item_id:
-                gh.move_phase_issue(project_info, item_id, "Done")
-            if item.get("issue"):
-                gh.close_issue(repo, item["issue"], comment="Closed automatically — SDLC workflow complete.")
+    if state_val == "done":
         for story_id, item in wf.github_story_items.items():
-            item_id = _ensure_story_on_board(story_id, item)
+            item_id = item.get("item_id", "")
             if item_id:
-                gh.move_phase_issue(project_info, item_id, "Done")
-            issue_number = item.get("number") or item.get("issue")
+                gh._move_item(project_info, item_id, "Done")
+            issue_number = item.get("number")
             if issue_number:
                 gh.close_issue(repo, issue_number, comment=f"Closed automatically — {story_id} complete.")
         for task_id, item in wf.github_task_items.items():
-            issue_number = item.get("number") or item.get("issue")
+            issue_number = item.get("number")
             if issue_number:
                 gh.close_issue(repo, issue_number, comment=f"Closed automatically — {task_id} complete.")
-        click.echo("synced: all phases and stories → Done, issues closed")
+        click.echo("synced: all stories → Done, issues closed")
         return
 
-    if wf.state.value in ("story_in_progress", "story_awaiting_review"):
-        story_board_status = "In Progress" if wf.state.value == "story_in_progress" else "Awaiting Review"
-        current = wf.current_story
-        if not current:
-            click.echo("skipped: no current_story set (run 'sdlc story start STORY-NNN' first)")
-            return
-        story_item = wf.github_story_items.get(current, {})
-        item_id = _ensure_story_on_board(current, story_item)
-        if not item_id:
-            click.echo(f"skipped: no board item for {current}")
-            return
-        ok = gh.move_phase_issue(project_info, item_id, story_board_status)
-        click.echo(f"{'synced' if ok else 'failed'}: {current} → {story_board_status}")
+    if state_val not in ("story_in_progress", "story_awaiting_review"):
+        click.echo(f"skipped: no story board action for state {state_val}")
         return
 
-    if not phase:
-        click.echo(f"skipped: no phase mapped for state {wf.state.value}")
+    story_status = "In Progress" if state_val == "story_in_progress" else "Awaiting Review"
+    current = wf.current_story
+    if not current:
+        click.echo("skipped: no current_story set")
         return
 
-    item = wf.github_phase_items.get(phase, {})
-    item_id = _ensure_phase_on_board(item, phase)
+    item = wf.github_story_items.get(current, {})
+    item_id = item.get("item_id", "")
+    issue_number = item.get("number")
+
+    # Add to board if not already there
+    if not item_id and issue_number:
+        node_id = gh._get_issue_node_id(repo, issue_number)
+        if node_id:
+            item_id = gh.add_to_project(project_info["node_id"], node_id)
+            if item_id:
+                wf.set_story_items({current: {"number": issue_number, "item_id": item_id}})
+
     if not item_id:
-        click.echo(f"skipped: no board item for phase {phase} (run 'sdlc github setup' first)")
+        click.echo(f"skipped: no board item for {current}")
         return
 
-    ok = gh.move_phase_issue(project_info, item_id, board_status)
-    click.echo(f"{'synced' if ok else 'failed'}: {phase} → {board_status}")
+    ok = gh._move_item(project_info, item_id, story_status)
+    click.echo(f"{'synced' if ok else 'failed'}: {current} → {story_status}")
 
 
 @github.command("close-merged")
@@ -424,12 +364,10 @@ def github_create_story_issues(plan_file):
         return
 
     console.print(f"  Creating {len(new_stories)} story issue(s)...")
-    phase_story_count = len([p for p in wf.github_phase_items if wf.github_phase_items[p].get("issue")])
     created = gh.create_story_issues(
         repo=repo, stories=new_stories,
         project_info=wf.github_project,
         epic_issue=wf.github_epic_issue,
-        story_number_offset=phase_story_count,
         task_issue_map=wf.github_task_items,
     )
     wf.set_story_items(created)
@@ -438,20 +376,4 @@ def github_create_story_issues(plan_file):
     click.echo(f"created: {len(created)} story issue(s)")
 
 
-@github.command("close-phase-issue")
-@click.argument("phase")
-@click.option("--comment", default="", help="Optional closing comment")
-def github_close_phase_issue(phase, comment):
-    """Close the GitHub issue for a completed phase."""
-    from sdlc_orchestrator.integrations import github as gh
 
-    project_dir = require_project()
-    repo = _get_repo(project_dir)
-    wf = WorkflowState(project_dir)
-    item = wf.github_phase_items.get(phase, {})
-    issue_number = item.get("issue")
-    if not issue_number:
-        click.echo(f"skipped: no issue found for phase {phase}")
-        return
-    gh.close_issue(repo, issue_number, comment=comment or f"Phase {phase} complete.")
-    click.echo(f"closed: #{issue_number} ({phase})")
