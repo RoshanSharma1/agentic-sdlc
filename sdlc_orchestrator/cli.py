@@ -144,10 +144,32 @@ def _trigger_agent(project_dir: Path, skill: str = "sdlc-orchestrate") -> subpro
     try:
         skills_pkg = _files("sdlc_orchestrator") / "skills"
         for skill_file in skills_pkg.iterdir():  # type: ignore[attr-defined]
-            dest = dest_dir / skill_file.name
-            if not dest.exists() or force:
-                dest.write_text(skill_file.read_text(encoding="utf-8"))
-                console.print(f"  [dim]skill:[/dim] {dest_dir}/{skill_file.name}")
+            if executor == "kiro":
+                # Kiro: copy .md to ~/.kiro/skills/ AND generate a JSON agent
+                # that uses the skill file as its system prompt
+                skill_name = skill_file.name.replace(".md", "")
+                md_dest = dest_dir / skill_file.name
+                if not md_dest.exists() or force:
+                    md_dest.write_text(skill_file.read_text(encoding="utf-8"))
+                # JSON agent in ~/.kiro/agents/ — prompt points to the skill file
+                agents_dir = Path.home() / ".kiro" / "agents"
+                agents_dir.mkdir(parents=True, exist_ok=True)
+                agent_json = agents_dir / f"{skill_name}.json"
+                if not agent_json.exists() or force:
+                    import json as _json
+                    agent_json.write_text(_json.dumps({
+                        "name": skill_name,
+                        "description": f"SDLC skill: {skill_name}",
+                        "prompt": f"file://{md_dest}",
+                        "tools": ["fs_read", "fs_write", "execute_bash", "grep", "glob"],
+                        "allowedTools": ["fs_read", "fs_write", "execute_bash", "grep", "glob"],
+                    }, indent=2))
+                console.print(f"  [dim]skill:[/dim] {md_dest}  +  {agent_json}")
+            else:
+                dest = dest_dir / skill_file.name
+                if not dest.exists() or force:
+                    dest.write_text(skill_file.read_text(encoding="utf-8"))
+                    console.print(f"  [dim]skill:[/dim] {dest_dir}/{skill_file.name}")
     except Exception as e:
         console.print(f"  [yellow]Skill install warning: {e}[/yellow]")
 

@@ -95,7 +95,7 @@ Open your AI coding agent in the project directory, then run:
 |-------|------|-------------|--------------|-----------------|
 | **Claude Code** | `claude` in terminal | `~/.claude/commands/` | `CLAUDE.md` | `while true; do claude -p "/sdlc-orchestrate"; sleep 600; done` |
 | **Codex** | `codex` in terminal | `~/.codex/commands/` | `AGENTS.md` | `while true; do codex -p "/sdlc-orchestrate"; sleep 600; done` |
-| **Kiro** | Open Kiro in project dir | `~/.kiro/agents/` | `AGENT.md` | `while true; do kiro -p "/sdlc-orchestrate"; sleep 600; done` |
+| **Kiro** | Open Kiro in project dir | `~/.kiro/skills/` + `~/.kiro/agents/` | `AGENT.md` | `while true; do kiro-cli chat --agent sdlc-orchestrate --no-interactive start; sleep 600; done` |
 | **Cline** | Open VS Code with Cline | `~/.cline/commands/` | `AGENT.md` | Run `/sdlc-orchestrate` manually each tick |
 
 The agent will:
@@ -132,7 +132,7 @@ while true; do claude -p "/sdlc-orchestrate"; sleep 600; done
 while true; do codex -p "/sdlc-orchestrate"; sleep 600; done
 
 # Kiro
-while true; do kiro -p "/sdlc-orchestrate"; sleep 600; done
+while true; do kiro-cli chat --agent sdlc-orchestrate --no-interactive start; sleep 600; done
 ```
 
 Each iteration spawns a fresh agent process (no context bleed between ticks). Run this in a dedicated terminal tab.

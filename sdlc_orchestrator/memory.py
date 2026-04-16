@@ -25,7 +25,7 @@ GLOBAL_MEMORY_PATH = Path.home() / ".sdlc" / "global.md"
 EXECUTOR_CONFIG: dict[str, tuple[str, Path, Path]] = {
     "claude-code": ("CLAUDE.md",  Path.home() / ".claude" / "commands", Path(".claude")),
     "codex":       ("AGENTS.md",  Path.home() / ".codex"  / "commands", Path(".codex")),
-    "kiro":        ("AGENT.md",   Path.home() / ".kiro"   / "agents",   Path(".kiro")),
+    "kiro":        ("AGENT.md",   Path.home() / ".kiro"   / "skills",   Path(".kiro")),
     "cline":       ("AGENT.md",   Path.home() / ".cline"  / "commands", Path(".cline")),
 }
 DEFAULT_EXECUTOR = "claude-code"
@@ -35,7 +35,7 @@ DEFAULT_EXECUTOR = "claude-code"
 EXECUTOR_CLI: dict[str, list[str]] = {
     "claude-code": ["claude", "-p", "--dangerously-skip-permissions", "/{skill}"],
     "codex":       ["codex",  "-p", "/{skill}"],
-    "kiro":        ["kiro",   "-p", "/{skill}"],
+    "kiro":        ["kiro-cli", "chat", "--agent", "{skill}", "--no-interactive", "start"],
     "cline":       [],  # Cline has no headless CLI — must be triggered manually
 }
 
