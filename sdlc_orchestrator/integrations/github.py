@@ -92,11 +92,31 @@ BOARD_STATUSES = ["Backlog", "In Progress", "Awaiting Review", "Blocked", "Done"
 
 def create_project_board(project_name: str, repo: str) -> Optional[dict]:
     """
-    Create a GitHub Projects v2 board.
+    Create a GitHub Projects v2 board, or return existing one with same title.
     Returns project info dict: {number, node_id, status_field_id, status_options}
     or None on failure.
     """
     owner = repo.split("/")[0]
+
+    # Check for existing board with same name before creating
+    try:
+        r = _gh("project", "list", "--owner", owner, "--format", "json", "--limit", "50")
+        existing = json.loads(r.stdout).get("projects", [])
+        for p in existing:
+            if p.get("title") == project_name:
+                number = p["number"]
+                node_id = _get_project_node_id(owner, int(number))
+                if node_id:
+                    fields = _get_project_fields(node_id)
+                    return {
+                        "number":          int(number),
+                        "node_id":         node_id,
+                        "status_field_id": fields.get("field_id", ""),
+                        "status_options":  fields.get("options", {}),
+                    }
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError):
+        pass
+
     try:
         r = _gh(
             "project", "create",
@@ -615,6 +635,7 @@ def create_pr(
     base: str = "main",
     closes_issue: Optional[int] = None,
     closes_issues: Optional[list] = None,
+    project_name: str = "",
 ) -> Optional[str]:
     """Create a PR for a phase. Returns PR URL or None."""
     all_closes = list(closes_issues or [])
@@ -622,11 +643,13 @@ def create_pr(
         all_closes.append(closes_issue)
     if all_closes:
         body += "\n\n" + "\n".join(f"Closes #{n}" for n in all_closes)
+    prefix = f"[{project_name}] " if project_name else ""
+    title = f"{prefix}sdlc({phase}): {phase} phase"
     try:
         r = _gh(
             "pr", "create",
             "--repo", repo,
-            "--title", f"sdlc({phase}): {phase} phase",
+            "--title", title,
             "--base", base,
             "--head", branch,
             "--body", body,

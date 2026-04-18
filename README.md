@@ -1,6 +1,6 @@
 # SDLC Orchestrator
 
-An **AI agent extension** that turns any supported AI coding agent into an autonomous software development assistant. It drives the full SDLC — requirements, design, planning, implementation, testing, and review — with human approval gates at each critical milestone.
+An **AI agent extension** that turns any supported AI coding agent into an autonomous software development assistant. It drives the full SDLC — requirements, design, planning, implementation, documentation, and review — with human approval gates at each critical milestone.
 
 > **What kind of extension is this?**
 > SDLC Orchestrator extends your AI coding agent with three components:
@@ -17,21 +17,26 @@ An **AI agent extension** that turns any supported AI coding agent into an auton
 
 You install the extension, point it at a project, and run `/sdlc-start` once inside your agent. That's it — `/sdlc-start` handles setup, interviews you, and hands the agent the wheel.
 
-Each phase produces a GitHub PR. The artifact (requirements, design, task plan) lives on a dedicated branch and is readable from anywhere. You review on GitHub, leave comments as feedback, and approve the PR. The agent detects the approval on the next tick and continues — no terminal commands needed.
+Each phase produces a GitHub PR on a namespaced branch (`sdlc-<project>-<phase>`). You review on GitHub, leave comments as feedback, and approve the PR. The agent detects the approval on the next tick and continues — no terminal commands needed.
 
 ```
 You                          Agent (autonomous)
 ────                         ──────────────────
 sdlc init                →   Scaffolds .sdlc/ directory
 /sdlc-start              →   Interviews you, writes spec.yaml
+                             Creates worktree/<project> base branch
                              Drafts requirements
-                             Opens PR: sdlc/requirements
+                             Opens PR: sdlc-<project>-requirements → worktree/<project>
 ⏸  Approve PR            →   Produces design.md
-                             Opens PR: sdlc/design
+                             Opens PR: sdlc-<project>-design → worktree/<project>
 ⏸  Approve PR            →   Produces plan.md (stories + tasks)
-                             Opens PR: sdlc/plan
+                             Opens PR: sdlc-<project>-plan → worktree/<project>
 ⏸  Approve PR            →   Implements story by story, opens PR per story
-⏸  Approve each story PR →   Moves to next story or marks done
+⏸  Approve each story PR →   Moves to next story
+                             When all stories done: writes docs + archives artifacts
+                             Opens PR: sdlc-<project>-docs → worktree/<project>
+⏸  Approve PR            →   Opens final PR: worktree/<project> → main
+⏸  Merge when ready      →   Ships to main
 ```
 
 ---
@@ -42,6 +47,7 @@ sdlc init                →   Scaffolds .sdlc/ directory
 - A supported AI coding agent (see above)
 - Git
 - `gh` CLI (optional, for GitHub integration)
+- Node.js + npm (for Docusaurus documentation build, if `apps/docs` exists)
 
 ---
 
@@ -84,10 +90,16 @@ Open your agent in the project directory and run:
 /sdlc-start
 ```
 
-That's it. `/sdlc-start` handles everything in one shot:
-1. Detects if setup is needed — interviews you, writes `spec.yaml`, drafts requirements
-2. Launches the first orchestration tick
-3. Prints the loop command to keep it running
+`/sdlc-start` handles everything in one shot:
+1. Asks for a project name (or picks up an existing one)
+2. Creates a `worktree/<project>` base branch — all phase branches fork from here, `main` is never touched during development
+3. Interviews you (project name, description, approval preferences)
+4. Writes `spec.yaml` and launches the first orchestration tick
+
+Pass `--no-approvals` to let the agent advance through all phases without waiting for PR approval:
+```
+/sdlc-start --no-approvals
+```
 
 **Agent-specific open commands:**
 
@@ -152,28 +164,22 @@ Shows the current state, approval status, branch, and recent history.
 
 ### Step 6 — Keep the agent on standby (optional but recommended)
 
-By default the agent only runs when you trigger it. To make it resume automatically the moment you approve a PR, use one of two modes:
-
 **Polling mode — `sdlc watch` (no infrastructure needed)**
-
-Run this in a separate terminal:
 
 ```bash
 sdlc watch
 ```
 
-It polls GitHub every 30 seconds. The moment a `sdlc/<phase>` PR is approved or merged, it triggers the agent automatically.
+Polls GitHub every 30 seconds across all projects. The moment a phase PR is approved or merged, it triggers the agent automatically. Also detects stuck agents (state unchanged for 10 minutes) and re-triggers them.
 
 ```bash
-sdlc watch --interval 60   # poll every 60s instead
+sdlc watch --interval 60 --stale-timeout 300
 ```
 
 **Webhook mode — real-time, zero polling**
 
-For instant response, run the built-in webhook server and point GitHub at it:
-
 ```bash
-# 1. Expose a public URL (example using ngrok)
+# 1. Expose a public URL
 ngrok http 8080
 
 # 2. Start the receiver
@@ -186,15 +192,48 @@ sdlc webhook --port 8080 --secret your-webhook-secret
 #    Events: Pull request reviews, Pull requests
 ```
 
-When GitHub fires a PR approved or merged event for any `sdlc/*` branch, the receiver triggers the agent immediately.
-
 ---
 
 ### Step 7 — Review story PRs
 
-Implementation is broken into stories. For each story, the agent opens a PR on a `sdlc/story-NNN` branch. Review it normally in GitHub — leave comments on specific lines or as general review comments.
+Implementation is broken into stories. For each story, the agent opens a PR on a `sdlc-<project>-story-NNN` branch. Review it normally in GitHub.
 
-When you approve the PR, the agent detects it on the next tick, marks the story complete, and moves to the next story (or marks the project done when all stories are finished).
+When you approve the PR, the agent marks the story complete and moves to the next one. When all stories are done it automatically enters the documentation phase.
+
+---
+
+### Step 8 — Documentation phase
+
+After all stories are approved the agent:
+
+1. Writes product and technical documentation into `apps/docs/docs/<project>/` (Docusaurus)
+2. Runs `npm run build` in `apps/docs` — build must pass before the PR is opened
+3. Archives all phase artifacts (`requirements.md`, `design.md`, `plan.md`) to `docs/sdlc/<project>/` so they land on `main` after merge
+4. Opens a PR: `sdlc-<project>-docs → worktree/<project>`
+
+Approve the PR, then the agent opens the final `worktree/<project> → main` PR for you to merge when ready to ship.
+
+---
+
+## Bypassing Approval Gates
+
+To skip PR approval for all phases (fully autonomous run):
+
+```bash
+sdlc state no-approvals   # set all phase_approvals to false
+sdlc state approvals      # restore all to true
+```
+
+Or set per-phase in `spec.yaml`:
+
+```yaml
+phase_approvals:
+  requirement: true
+  design: true
+  planning: false       # agent advances automatically
+  implementation: false
+  documentation: true
+```
 
 ---
 
@@ -203,58 +242,40 @@ When you approve the PR, the agent detects it on the next tick, marks the story 
 ### New greenfield project
 
 ```bash
-sdlc init                         # Interactive: name, stack, GitHub, Slack
+sdlc init
 cd my-project
 # open your agent
-/sdlc-setup                       # Agent interviews you
-/sdlc-start                       # Hand the agent the wheel
+/sdlc-start
 ```
 
 ### Attaching to an existing codebase
 
 ```bash
-sdlc init .                       # Run from inside the repo
+sdlc init .
 # open your agent
-/sdlc-setup                       # Agent analyzes existing code first, then interviews you
 /sdlc-start
 ```
 
-### Running a single phase manually
-
-Skip the orchestrator and run one phase at a time:
-
-```
-/sdlc-requirement     # Just requirements
-/sdlc-design          # Just design
-/sdlc-plan            # Just planning
-/sdlc-implement       # Just implementation
-/sdlc-validate        # Just testing
-/sdlc-review          # Just review
-```
-
-Useful when you want tighter control or are picking up mid-workflow.
-
 ### Resuming after interruption
 
-The orchestrator is designed to resume safely. If the agent is interrupted mid-phase, the next tick picks up from the last committed artifact — it never re-does completed work. Completed stories are tracked and skipped.
+The orchestrator resumes safely from the last committed artifact — it never re-does completed work.
 
-Just re-run:
 ```
 /sdlc-orchestrate
 ```
 
 ### Switching agents mid-project
 
-All workflow state lives in `.sdlc/` — not in any agent's memory. Any supported agent can pick up from the exact point another left off.
+All workflow state lives in `.sdlc/` — not in any agent's memory.
 
 ```bash
 # 1. Change executor in .sdlc/spec.yaml
-executor: kiro   # was: claude-code
+executor: kiro
 
-# 2. Re-run init to install skills and write the correct context file
+# 2. Re-run init to install skills for the new agent
 sdlc init .
 
-# 3. Open the new agent — it reads the same state.json and continues
+# 3. Open the new agent — reads the same state.json and continues
 /sdlc-orchestrate
 ```
 
@@ -262,66 +283,66 @@ sdlc init .
 
 ## Project Configuration
 
-Each project is configured via `.sdlc/spec.yaml`, generated by `/sdlc-setup`:
+`.sdlc/spec.yaml`, generated by `/sdlc-start`:
 
 ```yaml
 project_name: My App
 tech_stack: Node.js
-repo: owner/repo                 # GitHub repo (optional)
-slack_webhook: https://...       # Slack webhook for gate notifications (optional)
+repo: owner/repo
+slack_webhook: ""
 description: What the project does
-executor: claude-code            # AI agent: claude-code | codex | kiro | cline
+executor: kiro               # claude-code | codex | kiro | cline
 
-phases:                          # Which phases to run
-  - requirement
-  - design
-  - planning
-  - implementation
-  - testing
-  - review
-
-phase_approvals:                 # Which gates require human approval
+phase_approvals:             # Set to false to let the agent advance without waiting for PR approval
   requirement: true
   design: true
-  planning: false                # Agent advances automatically
-  implementation: false
+  planning: true
+  implementation: true
   testing: true
-  review: false
+  review: true
+  documentation: true
 ```
-
-Set `phase_approvals.<phase>: false` for phases you trust the agent to advance through without review.
-
----
-
-## Customizing Agent Behavior
-
-### Global engineering rules (`global.md`)
-
-`.sdlc/memory/global.md` defines organization-wide standards that apply to every project — code quality rules, testing requirements, security policies, commit message format, documentation standards. Edit this file to encode your team's conventions. It is merged into the agent's context file on every project.
-
-### Project context (`project.md`)
-
-`.sdlc/memory/project.md` documents the project-specific context: stack details, architecture decisions, domain terminology, folder conventions, deployment targets, known constraints. The agent reads this before every phase. Keep it up to date as the project evolves.
 
 ---
 
 ## State Machine
 
-The orchestrator manages 11 states across the workflow:
+The orchestrator manages 13 states:
 
 | State | Type | Description |
 |-------|------|-------------|
 | `requirement_in_progress` | Auto | Drafting requirements |
-| `requirement_ready_for_approval` | **Human gate** | Requirements PR open — awaiting approval |
+| `requirement_ready_for_approval` | **Human gate** | Requirements PR open |
 | `design_in_progress` | Auto | Designing system architecture |
-| `awaiting_design_approval` | **Human gate** | Design ready — awaiting approval |
+| `awaiting_design_approval` | **Human gate** | Design PR open |
 | `task_plan_in_progress` | Auto | Breaking design into stories and tasks |
-| `task_plan_ready` | **Human gate** | Task plan ready — awaiting approval |
+| `task_plan_ready` | **Human gate** | Plan PR open |
 | `story_in_progress` | Auto | Implementing a story |
-| `story_awaiting_review` | **Human gate** | Story PR open — awaiting approval |
+| `story_awaiting_review` | **Human gate** | Story PR open |
 | `feedback_incorporation` | Auto | Incorporating review feedback |
+| `documentation_in_progress` | Auto | Writing docs + archiving artifacts |
+| `documentation_awaiting_approval` | **Human gate** | Docs PR open |
 | `blocked` | **Human gate** | Needs manual intervention |
-| `done` | Terminal | Complete |
+| `done` | Terminal | Complete — final PR opened |
+
+---
+
+## Branch Structure
+
+```
+main                                    ← never touched during development
+└── worktree/<project>                  ← base branch; all phase branches fork from here
+    ├── sdlc-<project>-requirements     → PR → worktree/<project>
+    ├── sdlc-<project>-design           → PR → worktree/<project>
+    ├── sdlc-<project>-plan             → PR → worktree/<project>
+    ├── sdlc-<project>-story-001        → PR → worktree/<project>
+    ├── sdlc-<project>-story-002        → PR → worktree/<project>
+    └── sdlc-<project>-docs             → PR → worktree/<project>
+
+When all phases are done:
+  Agent opens PR: worktree/<project> → main
+  You review and merge when ready to ship.
+```
 
 ---
 
@@ -329,45 +350,54 @@ The orchestrator manages 11 states across the workflow:
 
 ```
 my-project/
-├── docs/sdlc/                    # Phase artifacts — committed, visible on GitHub
-│   ├── requirements.md           # on branch: sdlc/requirements
-│   ├── design.md                 # on branch: sdlc/design
-│   └── plan.md                   # on branch: sdlc/plan
-├── .sdlc/                        # Orchestration state (gitignored)
-│   ├── spec.yaml                 # Project specification
+├── apps/
+│   └── docs/                         # Docusaurus site
+│       └── docs/<project>/           # Generated by documentation phase
+│           ├── overview.md
+│           ├── getting-started.md
+│           ├── architecture.md
+│           ├── api.md
+│           └── changelog.md
+├── docs/
+│   └── sdlc/
+│       ├── <project>-requirements.md # Working artifact (on phase branch)
+│       ├── <project>-design.md
+│       ├── <project>-plan.md
+│       └── <project>/                # Archived to main after docs phase
+│           ├── requirements.md
+│           ├── design.md
+│           ├── plan.md
+│           └── README.md
+├── .sdlc/                            # Orchestration state (gitignored)
+│   ├── spec.yaml
+│   ├── active                        # Current project name
 │   ├── memory/
-│   │   ├── global.md             # Organization-wide engineering rules
-│   │   └── project.md            # Project-specific context
-│   ├── workflow/
-│   │   ├── state.json            # Current state and history
-│   │   └── feedback/             # Ingested PR review comments per phase
-├── AGENT.md                      # Generated context for the agent (gitignored)
-│                                 # (CLAUDE.md for Claude Code, AGENTS.md for Codex)
+│   │   ├── global.md                 # Org-wide engineering rules
+│   │   └── project.md                # Project-specific context
+│   └── workflow/
+│       ├── state.json
+│       └── feedback/                 # Ingested PR review comments per phase
+├── AGENT.md                          # Generated agent context (gitignored)
 └── .agent/
-    └── settings.json             # Hooks configuration (gitignored)
+    └── settings.json                 # Hooks configuration (gitignored)
 ```
-
-Each phase's artifact lives on its own branch and is accessible via the GitHub PR.
-A symlink is also created at `~/.sdlc/projects/<slug>` pointing to `.sdlc/`.
 
 ---
 
 ## Integrations
 
 ### Slack
-Set `slack_webhook` in `spec.yaml`. The agent automatically sends a notification whenever it reaches an approval gate, including a summary of what was produced and the PR link.
+Set `slack_webhook` in `spec.yaml`. The agent sends a notification at every approval gate with a summary and PR link.
 
 ### GitHub
-
-With `gh` CLI authenticated and `repo` set in `spec.yaml`, run once after `sdlc init`:
 
 ```bash
 sdlc github setup
 ```
 
-This creates:
+Creates labels, a Projects v2 board, workflow automations, and one issue per SDLC phase. Story issues are created when the plan is approved.
 
-**Labels** — colour-coded per phase:
+**Labels:**
 
 | Label | Phase |
 |-------|-------|
@@ -375,40 +405,9 @@ This creates:
 | `sdlc:design` | Design |
 | `sdlc:plan` | Task planning |
 | `sdlc:implementation` | Implementation & stories |
-| `sdlc:testing` | Testing |
-| `sdlc:review` | Code review |
+| `sdlc:documentation` | Documentation |
 | `awaiting-review` | Any gate |
 | `blocked` | Blocked state |
-
-**GitHub Projects v2 board** with a Status field:
-
-```
-Backlog → In Progress → Awaiting Review → Blocked → Done
-```
-
-**Workflow automations** (enabled automatically):
-- Item closed → Done
-- PR merged → Done
-- Item reopened → In Progress
-
-**Phase issues** — one issue per SDLC phase added to Backlog at setup. As the agent advances through the workflow, each issue moves across the board automatically via `sdlc github sync-board`.
-
-**Story issues** — when the task plan is approved, the agent parses `docs/sdlc/plan.md` and creates one GitHub issue per `STORY-NNN`, each labelled `sdlc:implementation` and added to the board.
-
-**PR → issue linking** — every phase PR includes `Closes #N` so merging the PR automatically closes the phase issue and triggers the workflow automation to move it to Done.
-
-The result:
-
-```
-GitHub Projects Board
-├── #1  [sdlc:requirement] Requirements          Done ✓
-├── #2  [sdlc:design]      System Design         Done ✓
-├── #3  [sdlc:plan]        Task Plan             Done ✓
-├── #4  [sdlc:impl]        STORY-001: Auth       In Progress
-├── #5  [sdlc:impl]        STORY-002: API        Backlog
-├── #6  [sdlc:impl]        STORY-003: UI         Backlog
-└── #7  [sdlc:review]      Code Review           Backlog
-```
 
 ---
 
@@ -438,9 +437,11 @@ GitHub Projects Board
 |---------|-------------|
 | `sdlc init [source]` | Scaffold a project (new, GitHub repo, or local path) |
 | `sdlc status` | Show current workflow state and history |
-| `sdlc watch [--interval N]` | Poll GitHub PRs and trigger the agent on approval |
+| `sdlc watch [--interval N] [--stale-timeout N]` | Poll GitHub PRs and trigger agent on approval; detects stuck agents |
 | `sdlc webhook [--port N] [--secret S]` | Webhook receiver for real-time GitHub events |
 | `sdlc state approve` | Advance past a gate manually (fallback when no GitHub) |
+| `sdlc state no-approvals` | Disable all phase approval gates — agent advances automatically |
+| `sdlc state approvals` | Re-enable all phase approval gates |
 
 ### Agent-facing commands (called during orchestration)
 

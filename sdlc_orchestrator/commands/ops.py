@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 import click
 from rich.table import Table
@@ -12,11 +13,14 @@ from sdlc_orchestrator.utils import create_symlink, project_slug, sdlc_home
 from sdlc_orchestrator.commands import console, require_project
 
 # Maps each approval gate to the branch Claude should poll
-_GATE_BRANCHES: dict[str, str] = {
-    "requirement_ready_for_approval": "sdlc/requirements",
-    "awaiting_design_approval":       "sdlc/design",
-    "task_plan_ready":                "sdlc/plan",
+# Branch names are project-namespaced: sdlc-$PROJECT-<phase>
+# The actual branch name is resolved at runtime using the active project name.
+_GATE_BRANCH_SUFFIXES: dict[str, str] = {
+    "requirement_ready_for_approval": "requirements",
+    "awaiting_design_approval":       "design",
+    "task_plan_ready":                "plan",
     "story_awaiting_review":          "",
+    "documentation_awaiting_approval": "docs",
     "blocked":                        "",
 }
 
@@ -25,6 +29,22 @@ _GATE_BRANCHES: dict[str, str] = {
 def status():
     """Show current SDLC state (human-readable)."""
     project_dir = require_project()
+
+    # Show all active projects from .sdlc/active
+    active_file = project_dir / ".sdlc" / "active"
+    if active_file.exists():
+        projects = [p for p in active_file.read_text().splitlines() if p.strip()]
+        if len(projects) > 1:
+            console.print("[bold]Active projects:[/bold]")
+            for p in projects:
+                wf_state = "?"
+                try:
+                    wf_state = WorkflowState(project_dir / "worktree" / p).state.value
+                except Exception:
+                    pass
+                console.print(f"  {p}  [dim]{wf_state}[/dim]")
+            console.print()
+
     wf = WorkflowState(project_dir)
     spec = MemoryManager(project_dir).spec()
 
@@ -68,62 +88,153 @@ def notify(phase, event):
     click.echo(f"notified: {phase}/{event}")
 
 
+def _find_all_project_dirs(scan_dir: Path | None = None) -> list[tuple[Path, str]]:
+    """Return (project_dir, project_name) for all projects found.
+    Checks ~/.sdlc/projects symlinks first, then scans scan_dir for .sdlc/ directories."""
+    from sdlc_orchestrator.utils import get_active_project
+    results = []
+    seen = set()
+
+    # 1. ~/.sdlc/projects symlinks
+    projects_home = Path.home() / ".sdlc" / "projects"
+    if projects_home.exists():
+        for link in projects_home.iterdir():
+            if not (link.is_symlink() and link.exists()):
+                continue
+            try:
+                sdlc_projects_dir = link.resolve().parent
+                project_dir = sdlc_projects_dir.parent.parent
+                if (project_dir / ".sdlc").exists() and project_dir not in seen:
+                    seen.add(project_dir)
+                    results.append((project_dir, link.resolve().name))
+            except Exception:
+                continue
+
+    # 2. Scan directory for .sdlc/ subdirectories
+    if scan_dir and scan_dir.exists():
+        for child in scan_dir.iterdir():
+            if child.is_dir() and (child / ".sdlc").exists() and child not in seen:
+                seen.add(child)
+                active = get_active_project(child)
+                results.append((child, active))
+
+    return results
+
+
 @click.command()
-@click.option("--interval", default=30, show_default=True, help="Seconds between GitHub polls")
-def watch(interval):
-    """Watch for PR approval and resume Claude automatically."""
+@click.option("--interval", default=30, show_default=True, help="Seconds between polls")
+@click.option("--stale-timeout", default=600, show_default=True,
+              help="Seconds before a non-advancing project is considered stuck")
+@click.option("--all-projects", is_flag=True, default=True, show_default=True,
+              help="Watch all projects under ~/.sdlc/projects (default: on)")
+@click.option("--projects-dir", default=None, type=click.Path(exists=True, file_okay=False),
+              help="Directory to scan for projects (defaults to parent of cwd)")
+def watch(interval, stale_timeout, all_projects, projects_dir):
+    """Watch all projects for PR approvals and stuck agents, trigger automatically."""
+    import os
     import time
     from sdlc_orchestrator.integrations.github import get_pr_status, is_available
+    from sdlc_orchestrator.integrations.slack import notify_from_spec
     from sdlc_orchestrator.commands.init import trigger_agent
 
-    project_dir = require_project()
-    spec = MemoryManager(project_dir).spec()
-    repo = spec.get("repo", "")
+    # Collect projects to watch
+    scan = Path(projects_dir) if projects_dir else Path.cwd().parent
+    if all_projects:
+        project_entries = _find_all_project_dirs(scan_dir=scan)
+        if not project_entries:
+            project_dir = require_project()
+            project_entries = [(project_dir, None)]
+    else:
+        project_dir = require_project()
+        project_entries = [(project_dir, None)]
 
-    if not repo:
-        console.print("[yellow]No GitHub repo in spec.yaml — watch has nothing to poll.[/yellow]")
-        sys.exit(1)
-
-    if not is_available():
-        console.print("[red]gh CLI not found or not authenticated. Run: gh auth login[/red]")
-        sys.exit(1)
-
-    console.print(f"[bold]sdlc watch[/bold] — polling GitHub every {interval}s")
-    console.print(f"  repo: [dim]{repo}[/dim]")
+    console.print(f"[bold]sdlc watch[/bold] — polling every {interval}s, stale timeout {stale_timeout}s")
+    console.print(f"  watching {len(project_entries)} project(s)")
     console.print("  Press Ctrl-C to stop.\n")
 
-    last_state = last_pr_status = ""
+    # Per-project tracking: {project_dir: {state, state_since, last_pr_status}}
+    tracking: dict[Path, dict] = {}
 
     while True:
         try:
-            wf = WorkflowState(project_dir)
-            current_state = wf.state.value
+            now = time.time()
 
-            if wf.state == State.DONE:
-                console.print("[green]✓ Workflow complete.[/green]")
-                break
+            for project_dir, project_name in project_entries:
+                try:
+                    wf = WorkflowState(project_dir)
+                except Exception:
+                    continue
 
-            branch = _GATE_BRANCHES.get(current_state, "")
-            if not branch:
-                if current_state != last_state:
-                    console.print(f"[dim]{current_state}[/dim] — Claude is working, not at a gate")
-                    last_state = current_state
-                time.sleep(interval)
-                continue
+                current_state = wf.state.value
+                spec = MemoryManager(project_dir).spec()
+                repo = spec.get("repo", "")
+                label = spec.get("project_name", project_dir.name)
 
-            pr_status = get_pr_status(repo, branch) or "not-found"
-            if current_state != last_state or pr_status != last_pr_status:
-                console.print(f"[dim]{current_state}[/dim]  PR [{branch}]: [bold]{pr_status}[/bold]")
-                last_state, last_pr_status = current_state, pr_status
+                track = tracking.setdefault(project_dir, {
+                    "state": current_state,
+                    "state_since": now,
+                    "last_pr_status": "",
+                })
 
-            if pr_status in ("approved", "merged"):
-                console.print(f"\n[green]✓ PR approved[/green] — triggering agent to continue...")
-                result = trigger_agent(project_dir)
-                if result is None:
-                    console.print("[yellow]Executor has no headless CLI — run /sdlc-orchestrate manually.[/yellow]")
-                elif result.returncode != 0:
-                    console.print("[yellow]Agent exited with an error.[/yellow]")
-                last_pr_status = ""
+                # Detect state change — reset stale timer
+                if track["state"] != current_state:
+                    track["state"] = current_state
+                    track["state_since"] = now
+                    track["last_pr_status"] = ""
+
+                if wf.state == State.DONE:
+                    continue
+
+                # ── blocked: notify Slack, don't trigger ──────────────────
+                if current_state == "blocked":
+                    stale_secs = now - track["state_since"]
+                    if stale_secs < interval * 2:  # only notify once
+                        console.print(f"[red]BLOCKED[/red]  {label}: {wf.blocked_reason or 'no reason given'}")
+                        if repo:
+                            try:
+                                notify_from_spec(spec, "blocked", "blocked")
+                            except Exception:
+                                pass
+                    continue
+
+                # ── stale: state hasn't changed in stale_timeout ──────────
+                stale_secs = now - track["state_since"]
+                if stale_secs >= stale_timeout:
+                    console.print(f"[yellow]STUCK[/yellow]    {label}: '{current_state}' for {int(stale_secs)}s — triggering agent")
+                    result = trigger_agent(project_dir)
+                    if result is None:
+                        console.print(f"  [yellow]{label}: executor has no headless CLI[/yellow]")
+                    track["state_since"] = now  # reset to avoid re-triggering immediately
+                    continue
+
+                # ── approval gate: poll PR ────────────────────────────────
+                if not repo or not is_available():
+                    continue
+
+                slug = project_slug(project_dir)
+                active = project_name or wf._data.get("active_project", slug)
+                suffix = _GATE_BRANCH_SUFFIXES.get(current_state, "")
+                if current_state == "story_awaiting_review":
+                    branch = f"sdlc-{active}-{wf.current_story.lower()}" if wf.current_story else ""
+                elif suffix:
+                    branch = f"sdlc-{active}-{suffix}"
+                else:
+                    branch = ""
+
+                if not branch:
+                    continue
+
+                pr_status = get_pr_status(repo, branch) or "not-found"
+                if pr_status != track["last_pr_status"]:
+                    console.print(f"[dim]{label}[/dim]  {current_state}  PR [{branch}]: [bold]{pr_status}[/bold]")
+                    track["last_pr_status"] = pr_status
+
+                if pr_status in ("approved", "merged"):
+                    console.print(f"[green]✓ PR approved[/green]  {label} — triggering agent")
+                    result = trigger_agent(project_dir)
+                    if result is None:
+                        console.print(f"  [yellow]{label}: executor has no headless CLI[/yellow]")
+                    track["last_pr_status"] = ""
 
             time.sleep(interval)
 
@@ -221,10 +332,16 @@ def tick():
 
 @tick.command("acquire")
 def tick_acquire():
-    """Acquire the tick lock. Exits non-zero if already locked."""
+    """Acquire the tick lock. Exits non-zero if already locked or state is done."""
     import fcntl
     import os
     project_dir = require_project()
+
+    wf = WorkflowState(project_dir)
+    if wf.state == State.DONE:
+        click.echo("done: workflow is complete — run 'sdlc project close' to start a new cycle", err=True)
+        sys.exit(2)
+
     lock_path = sdlc_home(project_dir) / "workflow" / "tick.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_fh = open(lock_path, "w")

@@ -75,6 +75,16 @@ def project_switch(name: str):
     console.print(f"[green]✓[/green] Switched to project '{slug}'.")
 
 
+@project.command("activate")
+@click.argument("name")
+def project_activate(name: str):
+    """Add a project to the active list (idempotent). Used by sdlc-start."""
+    project_dir = require_project()
+    slug = _validate_name(name)
+    set_active_project(project_dir, slug)
+    click.echo(f"activated: {slug}")
+
+
 @project.command("close")
 @click.option("--next", "next_project", default=None, help="Switch to this project after closing.")
 def project_close(next_project: str | None):

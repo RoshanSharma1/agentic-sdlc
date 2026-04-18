@@ -28,6 +28,8 @@ class State(str, Enum):
     STORY_IN_PROGRESS              = "story_in_progress"
     STORY_AWAITING_REVIEW          = "story_awaiting_review"
     FEEDBACK_INCORPORATION         = "feedback_incorporation"
+    DOCUMENTATION_IN_PROGRESS      = "documentation_in_progress"
+    DOCUMENTATION_AWAITING_APPROVAL = "documentation_awaiting_approval"
     BLOCKED                        = "blocked"
     DONE                           = "done"
 
@@ -41,9 +43,12 @@ TRANSITIONS: dict[State, list[State]] = {
     State.TASK_PLAN_IN_PROGRESS:           [State.TASK_PLAN_READY],
     State.TASK_PLAN_READY:                 [State.STORY_IN_PROGRESS],
     State.STORY_IN_PROGRESS:              [State.STORY_AWAITING_REVIEW, State.BLOCKED],
-    State.STORY_AWAITING_REVIEW:          [State.STORY_IN_PROGRESS, State.FEEDBACK_INCORPORATION, State.DONE],
+    State.STORY_AWAITING_REVIEW:          [State.STORY_IN_PROGRESS, State.FEEDBACK_INCORPORATION,
+                                           State.DOCUMENTATION_IN_PROGRESS],
     State.FEEDBACK_INCORPORATION:          [State.REQUIREMENT_IN_PROGRESS, State.DESIGN_IN_PROGRESS,
                                             State.TASK_PLAN_IN_PROGRESS, State.STORY_IN_PROGRESS],
+    State.DOCUMENTATION_IN_PROGRESS:      [State.DOCUMENTATION_AWAITING_APPROVAL],
+    State.DOCUMENTATION_AWAITING_APPROVAL: [State.DONE],
     State.BLOCKED:                         [State.REQUIREMENT_IN_PROGRESS, State.DESIGN_IN_PROGRESS,
                                             State.TASK_PLAN_IN_PROGRESS, State.STORY_IN_PROGRESS],
     State.DONE:                            [],
@@ -55,6 +60,7 @@ APPROVAL_STATES: set[State] = {
     State.AWAITING_DESIGN_APPROVAL,
     State.TASK_PLAN_READY,
     State.STORY_AWAITING_REVIEW,
+    State.DOCUMENTATION_AWAITING_APPROVAL,
     State.BLOCKED,
 }
 
@@ -65,6 +71,7 @@ EXECUTABLE_STATES: set[State] = {
     State.TASK_PLAN_IN_PROGRESS,
     State.STORY_IN_PROGRESS,
     State.FEEDBACK_INCORPORATION,
+    State.DOCUMENTATION_IN_PROGRESS,
 }
 
 # Human-readable labels for display
@@ -78,6 +85,8 @@ STATE_LABELS: dict[State, str] = {
     State.STORY_IN_PROGRESS:              "Implementing story",
     State.STORY_AWAITING_REVIEW:          "Story PR open — awaiting your approval",
     State.FEEDBACK_INCORPORATION:          "Incorporating feedback",
+    State.DOCUMENTATION_IN_PROGRESS:       "Writing documentation (apps/docs)",
+    State.DOCUMENTATION_AWAITING_APPROVAL: "Documentation PR open — awaiting your approval",
     State.BLOCKED:                         "BLOCKED — needs human intervention",
     State.DONE:                            "Complete",
 }
@@ -135,6 +144,7 @@ class WorkflowState:
             "approval_needed": False,
             "blocked_reason": None,
             "current_branch": "main",
+            "base_branch": "main",           # overwritten by sdlc-start to worktree/$PROJECT
             # Story tracking (implementation phase)
             "current_story": None,           # STORY-NNN currently being worked
             "completed_stories": [],         # [STORY-001, STORY-002, ...] approved stories
@@ -159,7 +169,7 @@ class WorkflowState:
 
     @property
     def state(self) -> State:
-        return State(self._data["state"])
+        return State(self._data.get("state", State.REQUIREMENT_IN_PROGRESS.value))
 
     @property
     def retry_count(self) -> int:
@@ -232,6 +242,13 @@ class WorkflowState:
         if new_state in APPROVAL_STATES and self._notifier:
             artifact_path = self._latest_artifact_path()
             self._notifier(new_state, artifact_path)
+        if new_state == State.DONE:
+            try:
+                from sdlc_orchestrator.utils import close_project, get_active_project
+                active = get_active_project(self.project_dir)
+                close_project(self.project_dir, active)
+            except Exception:
+                pass
 
     def increment_retry(self) -> None:
         self._data["retry_count"] = self.retry_count + 1

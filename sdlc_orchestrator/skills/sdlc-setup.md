@@ -23,9 +23,12 @@ the resulting `.sdlc/memory/project.md`.
 
 ## Step 1b — Check for existing spec
 
-Read `.sdlc/spec.yaml` if it exists. If fields like `description`, `tech_stack`,
-or `repo` are already filled in, use them as defaults and only ask for what's
-missing. Never re-ask for information that's already complete.
+Read the active project's spec (spec lives at `.sdlc/projects/<active>/spec.yaml`):
+```bash
+cat .sdlc/projects/$(cat .sdlc/active 2>/dev/null || echo default)/spec.yaml
+```
+
+If fields like `description`, `tech_stack`, or `repo` are already filled in, use them as defaults and only ask for what's missing. Never re-ask for information that's already complete.
 
 > **Multi-project repos:** check which project is active first:
 > ```bash
@@ -64,7 +67,14 @@ needed. Don't follow a rigid script.
 
 ## Step 3 — Write spec.yaml
 
-Write `.sdlc/spec.yaml` with the collected answers:
+Write the spec to the active project's path:
+```bash
+# Get the active project name
+ACTIVE=$(cat .sdlc/active 2>/dev/null || echo default)
+# Spec path: .sdlc/projects/<active>/spec.yaml
+```
+
+Write `.sdlc/projects/$ACTIVE/spec.yaml` with the collected answers:
 
 ```yaml
 project_name: <name>
