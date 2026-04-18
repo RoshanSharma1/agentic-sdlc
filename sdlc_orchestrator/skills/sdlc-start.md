@@ -1,84 +1,186 @@
 # sdlc-start
 
-Bootstrap and launch SDLC orchestration for the current project in one shot.
-Handles init, setup, and the first orchestration tick — detecting what's already
-done and skipping it.
+Set up and launch SDLC orchestration. Run this once per project cycle.
+
+Accepts an optional `--no-approvals` flag:
+- `sdlc-start` — default, requires manual PR approval at each phase gate
+- `sdlc-start --no-approvals` — agent advances through all phases automatically
 
 ---
 
-## Step 1 — Check init status
+## Step 1 — Determine project name
+
+**Always ask the user** — never silently pick a default or reuse `.sdlc/active`.
+
+List any existing projects first:
 
 ```bash
-ls .sdlc/spec.yaml 2>/dev/null && echo "INIT_DONE" || echo "INIT_NEEDED"
+ls .sdlc/projects/ 2>/dev/null
 ```
 
-**If `INIT_NEEDED`:** run:
+Then ask:
+
+```
+Existing projects: <list, or "none">
+
+What is the project name?
+(Enter a name from the list to continue an existing project, or a new name to start one.)
+```
+
+Wait for the user's answer before proceeding. Do not infer or default.
+
+Set the chosen name as active (slugified — lowercase, hyphens only):
 ```bash
-sdlc init .
+PROJECT=$(echo "<chosen-name>" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//')
+sdlc project activate "$PROJECT"
+echo "Active project: $PROJECT"
 ```
-
-Wait for it to complete. This scaffolds `.sdlc/`, installs hooks and skills,
-and writes an empty spec. Continue to Step 2.
-
-**If `INIT_DONE`:** skip to Step 2.
 
 ---
 
-## Step 2 — Check setup status
+## Step 2 — Scaffold project directory if new
 
-Read `.sdlc/spec.yaml` and run:
+Use `$PROJECT` from Step 1 (do not re-read `.sdlc/active`).
+
 ```bash
-sdlc state get
+if [ ! -d ".sdlc/projects/$PROJECT" ]; then
+  mkdir -p .sdlc/projects/$PROJECT/memory
+  mkdir -p .sdlc/projects/$PROJECT/workflow/artifacts
+  mkdir -p .sdlc/projects/$PROJECT/workflow/logs
+  mkdir -p .sdlc/projects/$PROJECT/feedback
+  echo "Created project: $PROJECT"
+fi
 ```
-
-Setup is **already done** if ALL of the following are true:
-- `spec.yaml` has a non-empty `description` field
-- `state` is anything other than `requirement_in_progress`
-
-**If already done:** skip to Step 3.
-
-**If setup is needed:** run the full `sdlc-setup` skill inline now — interview
-the developer, fill in `spec.yaml`, draft requirements, and advance state to
-`requirement_ready_for_approval`. Do not return to this skill until setup is
-complete.
 
 ---
 
-## Step 3 — Launch orchestration
+## Step 3 — Ensure git repo and create worktree
 
-Setup is complete. Run the `sdlc-orchestrate` skill now to execute the first
-autonomous tick.
+Use `$PROJECT` from Step 1.
 
-After it completes (or pauses at an approval gate), read `executor` from
-`.sdlc/spec.yaml` and tell the developer the correct continuous-loop command:
+```bash
+git rev-parse --git-dir 2>/dev/null || (git init && git add -A && git commit -m "init" --allow-empty)
 
-| executor | continuous loop command |
-|----------|------------------------|
-| `claude-code` | `while true; do claude -p "/sdlc-orchestrate"; sleep 600; done` |
-| `codex`       | `while true; do codex exec --full-auto "/sdlc-orchestrate"; sleep 600; done` |
-| `kiro`        | `while true; do kiro-cli chat --agent sdlc-orchestrate --no-interactive start; sleep 600; done` |
-| `cline`       | Run `/sdlc-orchestrate` manually each tick in VS Code |
+REPO_ROOT=$(git rev-parse --show-toplevel)
 
-Then say:
+# Guard: must run from repo root, not from inside a worktree
+if git rev-parse --git-dir 2>/dev/null | grep -q "\.git/worktrees"; then
+  echo "ERROR: you are inside a worktree. Run /sdlc-start from the repo root: $REPO_ROOT"
+  exit 1
+fi
+
+WORKTREE_PATH="$REPO_ROOT/worktree/$PROJECT"
+
+# Create a dedicated branch for this worktree, branching from main
+git checkout main 2>/dev/null || true
+git checkout -b worktree/$PROJECT 2>/dev/null || git checkout worktree/$PROJECT
+git push -u origin worktree/$PROJECT 2>/dev/null || true
+
+# Add the worktree
+git worktree add "$WORKTREE_PATH" worktree/$PROJECT 2>/dev/null || echo "Worktree already exists"
+
+echo "Worktree: $WORKTREE_PATH"
+echo "Base branch: worktree/$PROJECT"
+```
+
+Scaffold `.sdlc/` inside the worktree and record `base_branch`:
+```bash
+mkdir -p "$WORKTREE_PATH/.sdlc/projects/$PROJECT/memory"
+mkdir -p "$WORKTREE_PATH/.sdlc/projects/$PROJECT/workflow/artifacts"
+mkdir -p "$WORKTREE_PATH/.sdlc/projects/$PROJECT/workflow/logs"
+mkdir -p "$WORKTREE_PATH/.sdlc/projects/$PROJECT/feedback"
+grep -qxF "$PROJECT" "$WORKTREE_PATH/.sdlc/active" 2>/dev/null || echo "$PROJECT" >> "$WORKTREE_PATH/.sdlc/active"
+
+# Copy spec if it exists
+cp ".sdlc/projects/$PROJECT/spec.yaml" "$WORKTREE_PATH/.sdlc/projects/$PROJECT/spec.yaml" 2>/dev/null || true
+
+# Write state.json with base_branch
+python3 -c "
+import json
+f = '$WORKTREE_PATH/.sdlc/projects/$PROJECT/workflow/state.json'
+try:
+    d = json.load(open(f))
+except Exception:
+    d = {}
+d['base_branch'] = 'worktree/$PROJECT'
+d['current_branch'] = 'worktree/$PROJECT'
+json.dump(d, open(f, 'w'), indent=2)
+print('base_branch = worktree/$PROJECT')
+"
+```
+
+---
+
+## Step 4 — Interview the developer
+
+Always ask — do not skip even if a spec already exists.
+
+Auto-detect what you can before asking:
+```bash
+git remote get-url origin 2>/dev/null
+ls package.json pyproject.toml requirements.txt go.mod Cargo.toml pom.xml 2>/dev/null
+```
+
+Ask only these two questions:
+
+| Field | Question |
+|---|---|
+| `project_name` | What is this project called? |
+| `description` | In one sentence, what problem does it solve? |
+
+Then, **if `--no-approvals` was NOT passed**, ask:
 
 ```
-✓ SDLC orchestration started.
+Do you want to require manual approval at each phase gate (requirements, design, plan, stories)?
+  [Y] Yes — I'll review and approve each phase PR on GitHub (default)
+  [N] No  — agent advances automatically through all phases
+```
 
-To run continuously (paste the command for your agent above):
+Set `phase_approvals` in spec.yaml:
+- `--no-approvals` flag passed → all phases `false`
+- User answered **No** → all phases `false`
+- User answered **Yes** (default) → all phases `true`
 
-  # Claude Code
-  while true; do claude -p "/sdlc-orchestrate"; sleep 600; done
+Set these automatically without asking:
+- `tech_stack` — detect from files
+- `repo` — parse from `git remote get-url origin`
+- `executor` — `kiro`
 
-  # Codex
-  while true; do codex exec --full-auto "/sdlc-orchestrate"; sleep 600; done
+Write spec to both `.sdlc/projects/$PROJECT/spec.yaml` and `$WORKTREE_PATH/.sdlc/projects/$PROJECT/spec.yaml`, then:
+```bash
+sdlc github setup 2>/dev/null || true
+```
 
-  # Kiro
-  while true; do kiro-cli chat --agent sdlc-orchestrate --no-interactive start; sleep 600; done
+---
 
-Each iteration spawns a fresh agent process (no context bleed between ticks).
-Run this in a dedicated terminal tab and leave it running.
+## Step 5 — Done
 
-The agent will pause and notify you at each approval gate.
-To approve a gate:
-  sdlc state approve
+**Stop here.** Do not run any phases. The orchestration loop does that.
+
+Tell the developer:
+
+```
+✓ Project '<name>' is ready.
+
+Branch structure:
+  main                              ← production, never touched during SDLC
+  worktree/<name>                   ← base branch; all phase branches fork from here
+    sdlc-<name>-requirements        → PR → worktree/<name>
+    sdlc-<name>-design              → PR → worktree/<name>
+    sdlc-<name>-plan                → PR → worktree/<name>
+    sdlc-<name>-story-001           → PR → worktree/<name>
+    ...
+
+  When all stories are done:
+    Agent opens PR: worktree/<name> → main
+    You review and merge when ready to ship.
+
+Working directory: worktree/<name>/
+
+Run the orchestration loop from the worktree to start:
+
+  cd worktree/<name>
+  while kiro-cli chat --agent sdlc-orchestrate --no-interactive --trust-all-tools start; do sleep 600; done
+
+Approve each phase by merging the PR on GitHub, or: sdlc state approve
 ```

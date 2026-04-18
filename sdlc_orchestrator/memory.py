@@ -111,9 +111,18 @@ class MemoryManager:
 
     # ── writers ──────────────────────────────────────────────────────────────
 
+    ALL_PHASES = ["requirement", "design", "planning", "implementation", "testing", "review", "documentation"]
+
     def write_spec(self, spec: dict) -> None:
         self._sdlc.mkdir(parents=True, exist_ok=True)
+        if "phase_approvals" not in spec:
+            spec["phase_approvals"] = {p: True for p in self.ALL_PHASES}
         self.spec_path.write_text(yaml.dump(spec, default_flow_style=False))
+
+    def set_phase_approvals(self, value: bool) -> None:
+        spec = self.spec()
+        spec["phase_approvals"] = {p: value for p in self.ALL_PHASES}
+        self.spec_path.write_text(yaml.dump(spec, default_flow_style=False, sort_keys=False))
 
     def write_project_memory(self, content: str) -> None:
         self.project_path.write_text(content)

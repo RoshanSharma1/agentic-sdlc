@@ -36,6 +36,8 @@ def github_create_pr(branch, phase):
 
     project_dir = require_project()
     repo = _get_repo(project_dir)
+    spec = MemoryManager(project_dir).spec()
+    project_name = spec.get("project_name", project_dir.name)
     subprocess.run(["git", "push", "-u", "origin", branch], cwd=project_dir, capture_output=True)
 
     wf = WorkflowState(project_dir)
@@ -54,8 +56,14 @@ def github_create_pr(branch, phase):
                         closes.append(t["number"])
                 break
 
+    from sdlc_orchestrator.utils import get_active_project
+    active = get_active_project(project_dir)
+    default_base = f"worktree/{active}" if active else "main"
+
     url = create_pr(
         repo=repo, phase=phase, branch=branch,
+        project_name=project_name,
+        base=wf._data.get("base_branch", default_base),
         body=(
             f"## SDLC Phase: `{phase}`\n\n"
             f"Automated output. Review then approve.\n\n"

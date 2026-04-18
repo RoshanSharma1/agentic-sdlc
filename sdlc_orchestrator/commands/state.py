@@ -33,7 +33,15 @@ def state_get():
     click.echo(f"retry_count: {wf.retry_count}")
     click.echo(f"project: {spec.get('project_name', project_dir.name)}")
     click.echo(f"branch: {wf._data.get('current_branch', 'main')}")
+    click.echo(f"base_branch: {wf._data.get('base_branch', 'main')}")
     click.echo(f"allowed_transitions: {', '.join(allowed_next)}")
+
+    phase_approvals = spec.get("phase_approvals", {})
+    if phase_approvals:
+        bypassed = [p for p, v in phase_approvals.items() if not v]
+        if bypassed:
+            click.echo(f"bypass_approvals: {', '.join(bypassed)}")
+
     if wf.current_story:
         click.echo(f"current_story: {wf.current_story}")
     if wf.completed_stories:
@@ -91,6 +99,7 @@ def state_approve():
         State.AWAITING_DESIGN_APPROVAL:       State.TASK_PLAN_IN_PROGRESS,
         State.TASK_PLAN_READY:                State.STORY_IN_PROGRESS,
         State.STORY_AWAITING_REVIEW:          State.STORY_IN_PROGRESS,
+        State.DOCUMENTATION_AWAITING_APPROVAL: State.DONE,
         State.BLOCKED:                        State.REQUIREMENT_IN_PROGRESS,
     }
     next_state = NEXT[wf.state]
@@ -107,3 +116,25 @@ def state_history():
     wf = WorkflowState(project_dir)
     for h in wf._data.get("history", []):
         click.echo(f"{h['timestamp'][:19]}  {h['state']}")
+
+
+def _set_phase_approvals(value: bool) -> None:
+    project_dir = require_project()
+    mem = MemoryManager(project_dir)
+    if not mem.spec():
+        click.echo("No spec.yaml found.", err=True)
+        sys.exit(1)
+    mem.set_phase_approvals(value)
+    click.echo(f"ok: phase approvals {'disabled' if not value else 'enabled'} for all phases")
+
+
+@state.command("no-approvals")
+def state_no_approvals():
+    """Disable all phase approval gates — agent advances automatically."""
+    _set_phase_approvals(False)
+
+
+@state.command("approvals")
+def state_approvals():
+    """Re-enable all phase approval gates (default behaviour)."""
+    _set_phase_approvals(True)

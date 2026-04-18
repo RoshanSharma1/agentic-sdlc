@@ -13,6 +13,7 @@ from sdlc_orchestrator.state_machine import State, WorkflowState
 from sdlc_orchestrator.memory import GLOBAL_MEMORY_PATH, MemoryManager
 from sdlc_orchestrator.utils import (
     create_symlink, project_slug, sdlc_home, update_gitignore,
+    get_active_project, set_active_project,
 )
 from sdlc_orchestrator.commands import console
 
@@ -206,7 +207,6 @@ def run_analyze_skill(project_dir: Path, spec: dict) -> None:
 
 def common_setup(project_dir: Path, spec: dict, is_new: bool, upgrade_skills: bool) -> None:
     import os
-    from sdlc_orchestrator.utils import get_active_project
     console.print()
     ensure_global_memory()
     init_sdlc_dirs(project_dir)
@@ -214,7 +214,7 @@ def common_setup(project_dir: Path, spec: dict, is_new: bool, upgrade_skills: bo
     active = get_active_project(project_dir)
     create_symlink(project_dir, active)
     slug = project_slug(project_dir)
-    link_name = f"{slug}-{active}" if active != "default" else slug
+    link_name = slug if active == slug else f"{slug}-{active}"
     console.print(f"  [green]✓[/green] symlink ~/.sdlc/projects/{link_name} → .sdlc/projects/{active}/")
 
     executor = spec.get("executor", "claude-code")
@@ -283,7 +283,8 @@ def common_setup(project_dir: Path, spec: dict, is_new: bool, upgrade_skills: bo
 @click.command()
 @click.argument("source", required=False)
 @click.option("--upgrade-skills", is_flag=True)
-def init(source, upgrade_skills):
+@click.option("--no-approvals", is_flag=True, help="Disable all phase approval gates (agent advances automatically).")
+def init(source, upgrade_skills, no_approvals):
     """Scaffold a project for SDLC orchestration.
 
     \b
@@ -295,7 +296,7 @@ def init(source, upgrade_skills):
     """
     kind = detect_source(source)
     if kind == "new":
-        _setup_new(upgrade_skills)
+        _setup_new(upgrade_skills, no_approvals)
     elif kind == "github":
         project_dir = Path.cwd() / repo_name_from_source(source)
         console.print(Panel(f"[bold]Attaching GitHub repo:[/bold] {source}", style="blue"))
@@ -304,12 +305,12 @@ def init(source, upgrade_skills):
             if r.returncode != 0:
                 console.print("[red]git clone failed[/red]")
                 sys.exit(1)
-        _setup_local(project_dir, upgrade_skills)
+        _setup_local(project_dir, upgrade_skills, no_approvals)
     else:
-        _setup_local(Path(source).resolve(), upgrade_skills)
+        _setup_local(Path(source).resolve(), upgrade_skills, no_approvals)
 
 
-def _setup_new(upgrade_skills: bool) -> None:
+def _setup_new(upgrade_skills: bool, no_approvals: bool = False) -> None:
     console.print(Panel("[bold]New project setup[/bold]", style="blue"))
     name = click.prompt("Project name (used for directory name)")
     slug = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")
@@ -319,14 +320,20 @@ def _setup_new(upgrade_skills: bool) -> None:
     if not (project_dir / ".git").exists():
         subprocess.run(["git", "init", "-q"], cwd=project_dir)
 
+    set_active_project(project_dir, slug)
     spec = {
         "project_name": name, "description": "", "tech_stack": "",
         "repo": "", "slack_webhook": "", "executor": "claude-code",
     }
+    if no_approvals:
+        spec["phase_approvals"] = {
+            "requirement": False, "design": False, "planning": False,
+            "implementation": False, "testing": False, "review": False,
+        }
     common_setup(project_dir, spec, is_new=True, upgrade_skills=upgrade_skills)
 
 
-def _setup_local(project_dir: Path, upgrade_skills: bool) -> None:
+def _setup_local(project_dir: Path, upgrade_skills: bool, no_approvals: bool = False) -> None:
     if not project_dir.exists():
         console.print(f"[red]Path does not exist: {project_dir}[/red]")
         sys.exit(1)
@@ -340,15 +347,28 @@ def _setup_local(project_dir: Path, upgrade_skills: bool) -> None:
         style="blue",
     ))
 
-    existing = project_dir / ".sdlc" / "spec.yaml"
-    if existing.exists():
-        spec = yaml.safe_load(existing.read_text()) or {}
+    # Determine project name: use existing active, or derive from directory name
+    existing_active = (project_dir / ".sdlc" / "active")
+    if not existing_active.exists():
+        proj_name = re.sub(r"[^a-z0-9-]", "-", project_dir.name.lower()).strip("-")
+        set_active_project(project_dir, proj_name)
+
+    active = get_active_project(project_dir)
+    spec_path = project_dir / ".sdlc" / "projects" / active / "spec.yaml"
+    if spec_path.exists():
+        spec = yaml.safe_load(spec_path.read_text()) or {}
     else:
         spec = {
             "project_name": project_dir.name, "description": "",
             "tech_stack": detect_stack(project_dir),
             "repo": detect_remote_repo(project_dir),
             "slack_webhook": "", "executor": "claude-code",
+        }
+
+    if no_approvals:
+        spec["phase_approvals"] = {
+            "requirement": False, "design": False, "planning": False,
+            "implementation": False, "testing": False, "review": False,
         }
 
     set_initial_state(project_dir, "requirement")

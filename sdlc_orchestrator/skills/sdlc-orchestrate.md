@@ -13,22 +13,31 @@ yet approved.
 > change `executor` in `.sdlc/spec.yaml` and re-run `sdlc init .` — the new
 > agent reads the same state and continues automatically.
 
+> **Branch / merge flow:**
+> ```
+> main                              ← never touched during SDLC
+> └── worktree/$PROJECT             ← base branch (from state: base_branch)
+>     ├── sdlc-$PROJECT-requirements  → PR → worktree/$PROJECT
+>     ├── sdlc-$PROJECT-design        → PR → worktree/$PROJECT
+>     ├── sdlc-$PROJECT-plan          → PR → worktree/$PROJECT
+>     └── sdlc-$PROJECT-story-NNN     → PR → worktree/$PROJECT
+>
+> When all stories done:
+>   Agent opens PR: worktree/$PROJECT → main
+>   Human merges when ready to ship.
+> ```
+> Phase branches fork from `$BASE_BRANCH`. PRs target `$BASE_BRANCH` (from `sdlc state get`), never `main`.
+
 ---
 
 ## Step -1 — First-time bootstrap (ONLY if .sdlc/ does not exist)
 
 ```bash
-ls .sdlc/spec.yaml 2>/dev/null && echo "READY" || echo "FIRST_TIME"
+sdlc state get 2>/dev/null && echo "READY" || echo "FIRST_TIME"
 ```
 
 - **READY** → skip to Step 0.
-- **FIRST_TIME** → run the full `sdlc-start` skill now:
-  1. `sdlc init .` — scaffold `.sdlc/`, install hooks and skills
-  2. Run `/sdlc-setup` inline — interview the developer, write `spec.yaml`,
-     draft requirements, advance state to `requirement_ready_for_approval`
-  3. Return to this skill (Step 0) once setup is complete.
-
-Do not proceed past this step until `.sdlc/spec.yaml` exists.
+- **FIRST_TIME** → stop and tell the developer to run `/sdlc-start` first.
 
 ---
 
@@ -40,9 +49,15 @@ sdlc tick acquire
 
 If this exits non-zero, another tick is already running — stop immediately.
 
-> **Multi-project repos:** if this codebase has multiple SDLC projects, confirm
-> the active project before proceeding: `sdlc project list`. Switch with
-> `sdlc project switch <name>` if needed.
+Read the active project name — you'll use it in all branch names:
+```bash
+RAW_PROJECT=${SDLC_PROJECT:-$(cat .sdlc/active 2>/dev/null || echo "default")}
+PROJECT=$(echo "$RAW_PROJECT" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | sed 's/--*/-/g;s/^-//;s/-$//')
+echo "Active project: $PROJECT"
+```
+
+All phase branches are namespaced: `sdlc-$PROJECT-requirements`, `sdlc-$PROJECT-design`, etc.
+The working branch is `sdlc-$PROJECT`.
 
 ---
 
@@ -61,7 +76,7 @@ If `gh` is not authenticated or no repo is configured, it will warn and continue
 
 Before doing any work, check what's already been done:
 
-1. Read the artifact for the current state (e.g. `docs/sdlc/plan.md` for
+1. Read the artifact for the current state (e.g. `docs/sdlc-$PROJECT-plan.md` for
    `implementation_in_progress`). If it's already complete, advance state
    and return — don't re-do work.
 2. If an artifact is partial (e.g. `plan.md` has some `[x] done` tasks),
@@ -111,9 +126,9 @@ reviewable via PR, and persistent outside the local machine.
 
 | Phase | Branch | Artifact file |
 |-------|--------|---------------|
-| requirement | `sdlc/requirements` | `docs/sdlc/requirements.md` |
-| design | `sdlc/design` | `docs/sdlc/design.md` |
-| planning | `sdlc/plan` | `docs/sdlc/plan.md` |
+| requirement | `sdlc-$PROJECT-requirements` | `docs/sdlc-$PROJECT-requirements.md` |
+| design | `sdlc-$PROJECT-design` | `docs/sdlc-$PROJECT-design.md` |
+| planning | `sdlc-$PROJECT-plan` | `docs/sdlc-$PROJECT-plan.md` |
 | implementation | `sdlc/implementation` | (code) |
 
 ---
@@ -123,21 +138,30 @@ reviewable via PR, and persistent outside the local machine.
 ```
 0. sdlc tick acquire              — prevent concurrent runs (exit if locked)
 0b. sdlc github setup            — idempotent: labels, board, pre-plan story issues
-1. sdlc state get                 — where am I? (read current_story, pending_stories)
+1. sdlc state get                 — where am I? (read current_story, pending_stories, bypass_approvals, base_branch)
+                                    capture BASE_BRANCH from the base_branch line (default: project/$PROJECT)
 2. state == done?                 — sdlc tick release, stop, congratulate
 3. state is approval gate?
-     PRE-PLAN PHASES (requirement / design / plan):
-       a. sdlc github pr-status sdlc/<phase>
-       b. sdlc github ingest-feedback sdlc/<phase> <phase>
+     CHECK BYPASS FIRST:
+       If the current phase appears in bypass_approvals (from step 1 output),
+       skip PR polling and immediately advance:
+            → sdlc state set <next-state>
+            → sdlc github sync-board
+            → sdlc tick release
+            → stop  ← always stop so the next tick starts fresh with reset context
+
+     PRE-PLAN PHASES (requirement / design / plan) — only if NOT bypassed:
+       a. sdlc github pr-status sdlc-$PROJECT-<phase>
+       b. sdlc github ingest-feedback sdlc-$PROJECT-<phase> <phase>
        c. approved/merged?
             → sdlc state set <next-state>
             → sdlc github sync-board
             → continue to step 4
        d. open? → check feedback, address or remind, sdlc tick release, stop
 
-     STORY GATE (story_awaiting_review):
-       a. sdlc github pr-status sdlc/<current_story>   (e.g. sdlc/story-001)
-       b. sdlc github ingest-feedback sdlc/<current_story> <current_story>
+     STORY GATE (story_awaiting_review) — only if implementation NOT bypassed:
+       a. sdlc github pr-status sdlc-$PROJECT-<current_story>   (e.g. sdlc-$PROJECT-story-001)
+       b. sdlc github ingest-feedback sdlc-$PROJECT-<current_story> <current_story>
        c. approved/merged?
             → sdlc story complete       — prints "next: STORY-NNN" or "all_complete"
             → sdlc github sync-board
@@ -157,6 +181,16 @@ reviewable via PR, and persistent outside the local machine.
 
 Never skip a step. Never advance state before work is complete and committed.
 
+**Bypass mapping** — phase name in `bypass_approvals` → approval gate state it skips:
+
+| bypass_approvals phase | gate state skipped |
+|---|---|
+| `requirement` | `requirement_ready_for_approval` |
+| `design` | `awaiting_design_approval` |
+| `planning` | `task_plan_ready` |
+| `implementation` | `story_awaiting_review` |
+| `documentation` | `documentation_awaiting_approval` |
+
 ---
 
 ## State machine
@@ -166,22 +200,22 @@ All pre-plan phases follow the same pattern: `phase_in_progress` → PR →
 
 ```
 requirement_in_progress
-  → [you: write docs/sdlc/requirements.md, open PR]
-requirement_ready_for_approval       ← poll sdlc/requirements PR
+  → [you: write docs/sdlc-$PROJECT-requirements.md, open PR]
+requirement_ready_for_approval       ← poll sdlc-$PROJECT-requirements PR
   → [you: system design]
 design_in_progress
-  → [you: produces docs/sdlc/design.md]
-awaiting_design_approval             ← poll sdlc/design PR
+  → [you: produces docs/sdlc-$PROJECT-design.md]
+awaiting_design_approval             ← poll sdlc-$PROJECT-design PR
   → [you: task breakdown into STORY-NNN / TASK-NNN]
 task_plan_in_progress
-  → [you: produces docs/sdlc/plan.md]
-task_plan_ready                      ← poll sdlc/plan PR
+  → [you: produces docs/sdlc-$PROJECT-plan.md]
+task_plan_ready                      ← poll sdlc-$PROJECT-plan PR
   → [you: implement stories one by one]
 
   ┌─── per-story cycle (repeats for each STORY-NNN) ───────────────┐
   │  story_in_progress                                              │
-  │    → [you: implement tasks, run tests, commit on sdlc/story-NNN]│
-  │  story_awaiting_review          ← poll sdlc/story-NNN PR       │
+  │    → [you: implement tasks, run tests, commit on sdlc-$PROJECT-story-NNN]│
+  │  story_awaiting_review          ← poll sdlc-$PROJECT-story-NNN PR       │
   │    → approved + more stories:  start next story                 │
   │    → approved + last story:    done                             │
   │    → feedback: feedback_incorporation → story_in_progress       │
@@ -208,12 +242,16 @@ Each pre-plan phase follows the same pattern:
 
 ### state: requirement_in_progress
 
-You are a Business Analyst. Read `.sdlc/spec.yaml` and the agent context file
+You are a Business Analyst. Read the active project's spec:
+```bash
+cat .sdlc/projects/$(cat .sdlc/active 2>/dev/null || echo default)/spec.yaml
+```
+Also read the agent context file
 (`CLAUDE.md`, `AGENT.md`, or `AGENTS.md` — whichever exists in the project root).
 
-1. Checkout branch: `git checkout -b sdlc/requirements` (or switch if exists)
+1. Checkout branch: `git checkout $BASE_BRANCH && git checkout -b sdlc-$PROJECT-requirements 2>/dev/null || git checkout sdlc-$PROJECT-requirements`
 2. Create `docs/sdlc/` directory if needed
-3. Write `docs/sdlc/requirements.md` covering:
+3. Write `docs/sdlc-$PROJECT-requirements.md` covering:
    - Goals and non-goals (from spec.yaml)
    - Functional requirements (numbered, with acceptance criteria)
    - Non-functional requirements (performance, security, scalability)
@@ -223,13 +261,13 @@ You are a Business Analyst. Read `.sdlc/spec.yaml` and the agent context file
      anything ambiguous — the human can answer in PR comments
 4. Commit and push:
    ```bash
-   git add docs/sdlc/requirements.md
+   git add docs/sdlc-$PROJECT-requirements.md
    git commit -m "sdlc(requirement): draft requirements"
-   git push -u origin sdlc/requirements
+   git push -u origin sdlc-$PROJECT-requirements
    ```
 5. Open PR:
    ```bash
-   sdlc github create-pr sdlc/requirements requirement
+   sdlc github create-pr sdlc-$PROJECT-requirements requirement
    ```
 6. Run:
    ```bash
@@ -251,29 +289,29 @@ You are a Business Analyst. Read `.sdlc/spec.yaml` and the agent context file
 ### state: requirement_ready_for_approval
 
 ```bash
-sdlc github pr-status sdlc/requirements
-sdlc github ingest-feedback sdlc/requirements requirement
+sdlc github pr-status sdlc-$PROJECT-requirements
+sdlc github ingest-feedback sdlc-$PROJECT-requirements requirement
 ```
 
 - **approved or merged** → apply any feedback from `.sdlc/feedback/requirement.md`
-  to `docs/sdlc/requirements.md`, commit and push, then:
+  to `docs/sdlc-$PROJECT-requirements.md`, commit and push, then:
   ```bash
   sdlc state set design_in_progress
   sdlc github sync-board
   ```
 
 - **open** → check `.sdlc/feedback/requirement.md` for new comments.
-  If new comments exist: update `docs/sdlc/requirements.md`, commit and push, stop.
+  If new comments exist: update `docs/sdlc-$PROJECT-requirements.md`, commit and push, stop.
   If no new comments: remind the human to review the PR and stop.
 
 ---
 
 ### state: design_in_progress
 
-You are a Software Architect. Read `docs/sdlc/requirements.md`.
+You are a Software Architect. Read `docs/sdlc-$PROJECT-requirements.md`.
 
-1. Checkout branch: `git checkout -b sdlc/design` (or switch if exists)
-2. Write `docs/sdlc/design.md` covering:
+1. Checkout branch: `git checkout $BASE_BRANCH && git checkout -b sdlc-$PROJECT-design 2>/dev/null || git checkout sdlc-$PROJECT-design`
+2. Write `docs/sdlc-$PROJECT-design.md` covering:
    - Architecture overview (ASCII component diagram)
    - Component responsibilities and interfaces
    - Data model and API contracts
@@ -281,13 +319,13 @@ You are a Software Architect. Read `docs/sdlc/requirements.md`.
    - Security, scalability, risks
 3. Commit and push:
    ```
-   git add docs/sdlc/design.md
+   git add docs/sdlc-$PROJECT-design.md
    git commit -m "sdlc(design): system architecture"
-   git push -u origin sdlc/design
+   git push -u origin sdlc-$PROJECT-design
    ```
 4. Open PR:
    ```
-   sdlc github create-pr sdlc/design design
+   sdlc github create-pr sdlc-$PROJECT-design design
    ```
 5. Run: `sdlc state set awaiting_design_approval`
 6. Tell the human where the PR is and that approval continues the workflow.
@@ -297,30 +335,39 @@ You are a Software Architect. Read `docs/sdlc/requirements.md`.
 ### state: awaiting_design_approval
 
 ```bash
-sdlc github pr-status sdlc/design
-sdlc github ingest-feedback sdlc/design design
+sdlc github pr-status sdlc-$PROJECT-design
+sdlc github ingest-feedback sdlc-$PROJECT-design design
 ```
 
 - **approved or merged** → apply any feedback from `.sdlc/feedback/design.md`
-  to `docs/sdlc/design.md`, commit and push, then:
+  to `docs/sdlc-$PROJECT-design.md`, commit and push, then:
   ```bash
   sdlc state set task_plan_in_progress
   sdlc github sync-board
   ```
 
 - **open** → check `.sdlc/feedback/design.md` for new comments.
-  If new comments exist: address them by updating `docs/sdlc/design.md`,
-  commit and push to `sdlc/design`, then stop.
+  If new comments exist: address them by updating `docs/sdlc-$PROJECT-design.md`,
+  commit and push to `sdlc-$PROJECT-design`, then stop.
   If no new comments: remind the human to review the PR and stop.
 
 ---
 
 ### state: task_plan_in_progress
 
-You are a Project Manager. Read `docs/sdlc/design.md` and `docs/sdlc/requirements.md`.
+You are a Project Manager. Read `docs/sdlc-$PROJECT-design.md` and `docs/sdlc-$PROJECT-requirements.md`.
 
-1. Checkout branch: `git checkout -b sdlc/plan` (or switch if exists)
-2. Write `docs/sdlc/plan.md` — stories grouping tasks:
+1. Checkout branch: `git checkout $BASE_BRANCH && git checkout -b sdlc-$PROJECT-plan 2>/dev/null || git checkout sdlc-$PROJECT-plan`
+2. Write `docs/sdlc-$PROJECT-plan.md` — stories grouping tasks:
+
+   **Rule: every phase must have at least one STORY-NNN, and every story gets its own PR.**
+   Structure stories by phase:
+   - STORY-001..N: Requirements phase stories (e.g. domain model, API contracts)
+   - STORY-N+1..M: Design phase stories (e.g. architecture components)
+   - STORY-M+1..P: Implementation phase stories (feature work)
+   - STORY-P+1: Documentation story
+
+   Format:
    ```
    # STORY-001: <user-facing capability>
 
@@ -333,13 +380,13 @@ You are a Project Manager. Read `docs/sdlc/design.md` and `docs/sdlc/requirement
    ```
 3. Commit and push:
    ```
-   git add docs/sdlc/plan.md
+   git add docs/sdlc-$PROJECT-plan.md
    git commit -m "sdlc(plan): task breakdown"
-   git push -u origin sdlc/plan
+   git push -u origin sdlc-$PROJECT-plan
    ```
 4. Open PR:
    ```
-   sdlc github create-pr sdlc/plan planning
+   sdlc github create-pr sdlc-$PROJECT-plan planning
    ```
 5. Run: `sdlc state set task_plan_ready`
 
@@ -348,12 +395,12 @@ You are a Project Manager. Read `docs/sdlc/design.md` and `docs/sdlc/requirement
 ### state: task_plan_ready
 
 ```bash
-sdlc github pr-status sdlc/plan
-sdlc github ingest-feedback sdlc/plan planning
+sdlc github pr-status sdlc-$PROJECT-plan
+sdlc github ingest-feedback sdlc-$PROJECT-plan planning
 ```
 
 - **approved or merged** → apply any feedback from `.sdlc/feedback/planning.md`
-  to `docs/sdlc/plan.md`, commit, then:
+  to `docs/sdlc-$PROJECT-plan.md`, commit, then:
   ```bash
   sdlc github create-task-issues        # one issue per TASK-NNN → board
   sdlc github create-story-issues       # one issue per STORY-NNN → board; tasks auto-linked as sub-issues
@@ -367,7 +414,7 @@ sdlc github ingest-feedback sdlc/plan planning
   ```
 
 - **open** → check `.sdlc/feedback/planning.md` for new comments.
-  If new comments exist: update `docs/sdlc/plan.md`, commit and push to `sdlc/plan`, stop.
+  If new comments exist: update `docs/sdlc-$PROJECT-plan.md`, commit and push to `sdlc-$PROJECT-plan`, stop.
   If no new comments: remind the human to review the PR and stop.
 
 ---
@@ -377,13 +424,13 @@ sdlc github ingest-feedback sdlc/plan planning
 You are a Senior Developer. One story at a time — read `current_story` from
 `sdlc state get`.
 
-1. Read the story's tasks from `docs/sdlc/plan.md` (tasks grouped under this story)
+1. Read the story's tasks from `docs/sdlc-$PROJECT-plan.md` (tasks grouped under this story)
 2. Look up the story's GitHub issue number from `sdlc state get` (`github_story_items`)
    and each task's issue number (`github_task_items`). You'll use these in commits and PRs.
-3. Checkout branch: `git checkout -b sdlc/<current_story>` (e.g. `sdlc/story-001`)
-   Create from main if it doesn't exist; switch to it if it does.
+3. Checkout branch: `git checkout $BASE_BRANCH && git checkout -b sdlc-$PROJECT-<current_story> 2>/dev/null || git checkout sdlc-$PROJECT-<current_story>`
+   Create from sdlc-$PROJECT if it doesn't exist; switch to it if it does.
 4. For each `[ ] pending` task under this story, in dependency order:
-   - Implement following `docs/sdlc/design.md` exactly
+   - Implement following `docs/sdlc-$PROJECT-design.md` exactly
    - Write unit tests (TDD preferred)
    - Run tests — fix all failures before moving on
    - Commit referencing the task issue:
@@ -397,7 +444,7 @@ You are a Senior Developer. One story at a time — read `current_story` from
 7. If tests still fail after 3 attempts: `sdlc state set blocked` and explain clearly
 8. Push branch and open PR (PR body auto-includes `Closes #<story-issue>`):
    ```bash
-   sdlc github create-pr sdlc/<current_story> <current_story>
+   sdlc github create-pr sdlc-$PROJECT-<current_story> <current_story>
    ```
 9. Transition:
    ```bash
@@ -412,8 +459,8 @@ You are a Senior Developer. One story at a time — read `current_story` from
 
 ```bash
 sdlc state get                                              # get current_story
-sdlc github pr-status sdlc/<current_story>
-sdlc github ingest-feedback sdlc/<current_story> <current_story>
+sdlc github pr-status sdlc-$PROJECT-<current_story>
+sdlc github ingest-feedback sdlc-$PROJECT-<current_story> <current_story>
 ```
 
 - **approved or merged:**
@@ -428,19 +475,140 @@ sdlc github ingest-feedback sdlc/<current_story> <current_story>
     sdlc github sync-board
     ```
     Continue to `story_in_progress` instructions above.
-  - `all_complete` → close out:
+  - `all_complete` → move to documentation phase:
     ```bash
-    sdlc state set done
-    sdlc github sync-board    ← closes all issues, moves board to Done
+    sdlc state set documentation_in_progress
+    sdlc github sync-board
     ```
+    Continue to `documentation_in_progress` instructions below.
 
 - **open** → check `.sdlc/feedback/<current_story>.md` for new comments.
-  If new comments exist: address them on `sdlc/<current_story>` branch,
+  If new comments exist: address them on `sdlc-$PROJECT-<current_story>` branch,
   commit and push, then:
   ```bash
   sdlc state set feedback_incorporation
   ```
   If no new comments: remind the human where the PR is and stop.
+
+---
+
+### state: documentation_in_progress
+
+You are a Technical Writer. All implementation stories are complete.
+
+**Goal:** update `apps/docs` with product-level and technical documentation for this project, then propagate all SDLC artifacts to `main`.
+
+#### 1. Checkout branch
+
+```bash
+git checkout $BASE_BRANCH
+git checkout -b sdlc-$PROJECT-docs 2>/dev/null || git checkout sdlc-$PROJECT-docs
+```
+
+#### 2. Write / update Docusaurus docs in `apps/docs`
+
+Create or update these files (use `$PROJECT` as the folder name under `docs/`):
+
+| File | Content |
+|---|---|
+| `apps/docs/docs/$PROJECT/overview.md` | Product overview: what it does, who it's for, key features |
+| `apps/docs/docs/$PROJECT/getting-started.md` | Installation, configuration, quickstart |
+| `apps/docs/docs/$PROJECT/architecture.md` | Technical architecture — copy/adapt from `docs/sdlc-$PROJECT-design.md` |
+| `apps/docs/docs/$PROJECT/api.md` | API reference (if applicable) |
+| `apps/docs/docs/$PROJECT/changelog.md` | What was built in this cycle (derived from stories in `docs/sdlc-$PROJECT-plan.md`) |
+
+Add the project to `apps/docs/sidebars.js` (or `sidebars.ts`) if not already present.
+
+#### 3. Verify Docusaurus builds
+
+```bash
+cd apps/docs && npm run build
+```
+
+Fix any broken links or MDX errors before continuing. Do not proceed with a failing build.
+
+#### 4. Propagate SDLC artifacts to `main` via `docs/sdlc/$PROJECT/`
+
+On the same branch, copy the phase artifacts so they land on `main` after the PR merges:
+
+```bash
+mkdir -p docs/sdlc/$PROJECT
+cp docs/sdlc-$PROJECT-requirements.md docs/sdlc/$PROJECT/requirements.md 2>/dev/null || true
+cp docs/sdlc-$PROJECT-design.md       docs/sdlc/$PROJECT/design.md       2>/dev/null || true
+cp docs/sdlc-$PROJECT-plan.md         docs/sdlc/$PROJECT/plan.md         2>/dev/null || true
+```
+
+Also write a summary index:
+
+```bash
+cat > docs/sdlc/$PROJECT/README.md << EOF
+# $PROJECT — SDLC record
+
+Completed: $(date -u +%Y-%m-%d)
+
+## Artifacts
+- [Requirements](requirements.md)
+- [Design](design.md)
+- [Plan](plan.md)
+- [Docs](../../../apps/docs/docs/$PROJECT/)
+EOF
+```
+
+#### 5. Commit and push
+
+```bash
+git add apps/docs docs/sdlc/$PROJECT
+git commit -m "sdlc(docs): documentation and artifact archive for $PROJECT"
+git push -u origin sdlc-$PROJECT-docs
+```
+
+#### 6. Open PR and set state
+
+```bash
+sdlc github create-pr sdlc-$PROJECT-docs documentation
+sdlc state set documentation_awaiting_approval
+sdlc github sync-board
+```
+
+Tell the human:
+```
+⏸  Documentation complete. Waiting for PR approval.
+
+What was produced:
+  - apps/docs/docs/$PROJECT/ — product + technical docs
+  - docs/sdlc/$PROJECT/ — requirements, design, plan archived to main
+
+Review PR: <PR URL>
+
+Approve the PR to finish the project. Merging this PR lands everything on main.
+```
+
+---
+
+### state: documentation_awaiting_approval
+
+```bash
+sdlc github pr-status sdlc-$PROJECT-docs
+sdlc github ingest-feedback sdlc-$PROJECT-docs documentation
+```
+
+- **approved or merged** → apply any feedback from `.sdlc/feedback/documentation.md`
+  to `apps/docs/docs/$PROJECT/`, rebuild (`cd apps/docs && npm run build`), commit and push, then:
+  ```bash
+  sdlc state set done
+  sdlc github sync-board    # closes all issues, moves board to Done
+  ```
+  Then open the final PR to merge `$BASE_BRANCH` into `main`:
+  ```bash
+  gh pr create --base main --head $BASE_BRANCH \
+    --title "sdlc: complete $PROJECT" \
+    --body "All stories and documentation complete. Merging lands code + docs + .sdlc artifacts on main."
+  ```
+  Tell the human the PR URL. Merging `$BASE_BRANCH` → `main` is their decision when ready to ship.
+
+- **open** → check `.sdlc/feedback/documentation.md` for new comments.
+  If new comments exist: update docs, rebuild, commit and push to `sdlc-$PROJECT-docs`, stop.
+  If no new comments: remind the human to review the PR and stop.
 
 ---
 
@@ -498,3 +666,23 @@ A Slack notification has been sent automatically.
 - If no GitHub repo is configured, fall back to writing artifacts to
   `.sdlc/workflow/artifacts/` and tell the human to run `sdlc state approve`
 - Never start a second story while the current story's PR is still open
+
+---
+
+## At the end of every tick — print this cheatsheet
+
+After `sdlc tick release`, always print:
+
+```
+─────────────────────────────────────────────
+ SDLC quick reference
+─────────────────────────────────────────────
+ Start new project   /sdlc-start  (from repo root)
+ Orchestration loop  while kiro-cli chat --agent sdlc-orchestrate --no-interactive --trust-all-tools start; do sleep 600; done
+ Watch for approvals sdlc watch
+ Status              sdlc status
+ Approve gate        sdlc state approve
+ Skip all approvals  sdlc state no-approvals
+ Restore approvals   sdlc state approvals
+─────────────────────────────────────────────
+```

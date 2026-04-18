@@ -36,19 +36,52 @@ def _projects_dir(project_dir: Path) -> Path:
 
 
 def get_active_project(project_dir: Path) -> str:
-    """Return the name of the active project, defaulting to 'default'."""
+    """Return the name of the active project.
+    Priority: SDLC_PROJECT env var > first line of .sdlc/active > 'default'."""
+    env = os.environ.get("SDLC_PROJECT", "").strip()
+    if env:
+        return env
     active_file = project_dir / ".sdlc" / "active"
     if active_file.exists():
-        name = active_file.read_text().strip()
-        if name:
-            return name
+        for line in active_file.read_text().splitlines():
+            name = line.strip()
+            if name:
+                return name
     return _DEFAULT_PROJECT
 
 
 def set_active_project(project_dir: Path, name: str) -> None:
-    """Write the active project name."""
+    """Append project name to active list (idempotent — no duplicates)."""
     (project_dir / ".sdlc").mkdir(parents=True, exist_ok=True)
-    (project_dir / ".sdlc" / "active").write_text(name)
+    active_file = project_dir / ".sdlc" / "active"
+    existing = active_file.read_text().splitlines() if active_file.exists() else []
+    if name not in existing:
+        with active_file.open("a") as f:
+            f.write(name + "\n")
+
+
+def close_project(project_dir: Path, name: str) -> None:
+    """Move a project from active to closed list."""
+    (project_dir / ".sdlc").mkdir(parents=True, exist_ok=True)
+    # Remove from active
+    active_file = project_dir / ".sdlc" / "active"
+    if active_file.exists():
+        lines = [l for l in active_file.read_text().splitlines() if l.strip() and l.strip() != name]
+        active_file.write_text("\n".join(lines) + ("\n" if lines else ""))
+    # Append to closed (idempotent)
+    closed_file = project_dir / ".sdlc" / "closed"
+    existing = closed_file.read_text().splitlines() if closed_file.exists() else []
+    if name not in existing:
+        with closed_file.open("a") as f:
+            f.write(name + "\n")
+
+
+def list_closed_projects(project_dir: Path) -> list[str]:
+    """Return list of closed project names."""
+    closed_file = project_dir / ".sdlc" / "closed"
+    if not closed_file.exists():
+        return []
+    return [l.strip() for l in closed_file.read_text().splitlines() if l.strip()]
 
 
 def list_projects(project_dir: Path) -> list[str]:
@@ -66,15 +99,9 @@ def sdlc_home(project_dir: Path, project_name: str | None = None) -> Path:
     """
     Return the SDLC state directory for the active (or named) project.
     Layout: project_dir/.sdlc/projects/<name>/
-    Falls back to legacy project_dir/.sdlc/ if no projects/ subdir exists yet.
     """
     name = project_name or get_active_project(project_dir)
     candidate = _projects_dir(project_dir) / name
-    # Legacy layout: .sdlc/ directly (single-project repos)
-    if not candidate.exists() and not (_projects_dir(project_dir)).exists():
-        legacy = project_dir / ".sdlc"
-        if legacy.exists():
-            return legacy
     candidate.mkdir(parents=True, exist_ok=True)
     return candidate
 
@@ -87,7 +114,7 @@ def create_symlink(project_dir: Path, project_name: str | None = None) -> Path:
     sdlc_dir = sdlc_home(project_dir, name)
 
     slug = project_slug(project_dir)
-    link_name = f"{slug}-{name}" if name != _DEFAULT_PROJECT else slug
+    link_name = slug if name == slug else f"{slug}-{name}"
     link = Path.home() / ".sdlc" / "projects" / link_name
     link.parent.mkdir(parents=True, exist_ok=True)
 
@@ -101,9 +128,13 @@ def create_symlink(project_dir: Path, project_name: str | None = None) -> Path:
 
 
 def find_project_dir(start: Path | None = None) -> Path | None:
-    """Walk up from start (default: cwd) looking for a project root (.sdlc/ marker)."""
+    """Walk up from start (default: cwd) looking for a project root (.sdlc/ marker).
+    Stops at home directory — never treats ~ as a project root."""
+    home = Path.home().resolve()
     p = (start or Path.cwd()).resolve()
     for candidate in [p, *p.parents]:
+        if candidate == home:
+            break
         if (candidate / ".sdlc").is_dir():
             return candidate
     return None
@@ -119,6 +150,7 @@ def update_gitignore(project_dir: Path) -> None:
         ".codex/",
         ".kiro/",
         ".sdlc/.venv/",
+        "worktree/",
     ]
     gi = project_dir / ".gitignore"
     existing = gi.read_text() if gi.exists() else ""
