@@ -17,15 +17,17 @@ yet approved.
 > ```
 > main                              ← never touched during SDLC
 > └── worktree/$PROJECT             ← base branch (from state: base_branch)
->     ├── sdlc-$PROJECT-requirements  → PR → worktree/$PROJECT
->     ├── sdlc-$PROJECT-design        → PR → worktree/$PROJECT
->     ├── sdlc-$PROJECT-plan          → PR → worktree/$PROJECT
->     └── sdlc-$PROJECT-story-NNN     → PR → worktree/$PROJECT
+>     ├── sdlc-$PROJECT-requirements  → PR → MERGE → worktree/$PROJECT
+>     ├── sdlc-$PROJECT-design        → PR → MERGE → worktree/$PROJECT
+>     ├── sdlc-$PROJECT-plan          → PR → MERGE → worktree/$PROJECT
+>     └── sdlc-$PROJECT-story-NNN     → PR → MERGE → worktree/$PROJECT
 >
 > When all stories done:
 >   Agent opens PR: worktree/$PROJECT → main
 >   Human merges when ready to ship.
 > ```
+> **CRITICAL:** Every phase PR must be **merged into `$BASE_BRANCH` immediately after approval** — before the next phase/story branches. Each new branch must start from an up-to-date `$BASE_BRANCH` via `git pull`. This prevents cascade conflicts at project end.
+>
 > Phase branches fork from `$BASE_BRANCH`. PRs target `$BASE_BRANCH` (from `sdlc state get`), never `main`.
 
 ---
@@ -249,7 +251,11 @@ cat .sdlc/projects/$(cat .sdlc/active 2>/dev/null || echo default)/spec.yaml
 Also read the agent context file
 (`CLAUDE.md`, `AGENT.md`, or `AGENTS.md` — whichever exists in the project root).
 
-1. Checkout branch: `git checkout $BASE_BRANCH && git checkout -b sdlc-$PROJECT-requirements 2>/dev/null || git checkout sdlc-$PROJECT-requirements`
+1. Checkout branch (pull base first to start from latest):
+   ```bash
+   git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
+   git checkout -b sdlc-$PROJECT-requirements 2>/dev/null || git checkout sdlc-$PROJECT-requirements
+   ```
 2. Create `docs/sdlc/` directory if needed
 3. Write `docs/sdlc-$PROJECT-requirements.md` covering:
    - Goals and non-goals (from spec.yaml)
@@ -294,8 +300,10 @@ sdlc github ingest-feedback sdlc-$PROJECT-requirements requirement
 ```
 
 - **approved or merged** → apply any feedback from `.sdlc/feedback/requirement.md`
-  to `docs/sdlc-$PROJECT-requirements.md`, commit and push, then:
+  to `docs/sdlc-$PROJECT-requirements.md`, commit and push, then **merge the PR and update base**:
   ```bash
+  gh pr merge sdlc-$PROJECT-requirements --merge --body ""
+  git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
   sdlc state set design_in_progress
   sdlc github sync-board
   ```
@@ -310,7 +318,11 @@ sdlc github ingest-feedback sdlc-$PROJECT-requirements requirement
 
 You are a Software Architect. Read `docs/sdlc-$PROJECT-requirements.md`.
 
-1. Checkout branch: `git checkout $BASE_BRANCH && git checkout -b sdlc-$PROJECT-design 2>/dev/null || git checkout sdlc-$PROJECT-design`
+1. Checkout branch (pull base first to include merged requirements):
+   ```bash
+   git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
+   git checkout -b sdlc-$PROJECT-design 2>/dev/null || git checkout sdlc-$PROJECT-design
+   ```
 2. Write `docs/sdlc-$PROJECT-design.md` covering:
    - Architecture overview (ASCII component diagram)
    - Component responsibilities and interfaces
@@ -340,8 +352,10 @@ sdlc github ingest-feedback sdlc-$PROJECT-design design
 ```
 
 - **approved or merged** → apply any feedback from `.sdlc/feedback/design.md`
-  to `docs/sdlc-$PROJECT-design.md`, commit and push, then:
+  to `docs/sdlc-$PROJECT-design.md`, commit and push, then **merge the PR and update base**:
   ```bash
+  gh pr merge sdlc-$PROJECT-design --merge --body ""
+  git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
   sdlc state set task_plan_in_progress
   sdlc github sync-board
   ```
@@ -357,7 +371,11 @@ sdlc github ingest-feedback sdlc-$PROJECT-design design
 
 You are a Project Manager. Read `docs/sdlc-$PROJECT-design.md` and `docs/sdlc-$PROJECT-requirements.md`.
 
-1. Checkout branch: `git checkout $BASE_BRANCH && git checkout -b sdlc-$PROJECT-plan 2>/dev/null || git checkout sdlc-$PROJECT-plan`
+1. Checkout branch (pull base first to include merged design):
+   ```bash
+   git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
+   git checkout -b sdlc-$PROJECT-plan 2>/dev/null || git checkout sdlc-$PROJECT-plan
+   ```
 2. Write `docs/sdlc-$PROJECT-plan.md` — stories grouping tasks:
 
    **Rule: every phase must have at least one STORY-NNN, and every story gets its own PR.**
@@ -400,8 +418,10 @@ sdlc github ingest-feedback sdlc-$PROJECT-plan planning
 ```
 
 - **approved or merged** → apply any feedback from `.sdlc/feedback/planning.md`
-  to `docs/sdlc-$PROJECT-plan.md`, commit, then:
+  to `docs/sdlc-$PROJECT-plan.md`, commit, then **merge the PR and update base**:
   ```bash
+  gh pr merge sdlc-$PROJECT-plan --merge --body ""
+  git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
   sdlc github create-task-issues        # one issue per TASK-NNN → board
   sdlc github create-story-issues       # one issue per STORY-NNN → board; tasks auto-linked as sub-issues
   sdlc github sync-board
@@ -427,8 +447,11 @@ You are a Senior Developer. One story at a time — read `current_story` from
 1. Read the story's tasks from `docs/sdlc-$PROJECT-plan.md` (tasks grouped under this story)
 2. Look up the story's GitHub issue number from `sdlc state get` (`github_story_items`)
    and each task's issue number (`github_task_items`). You'll use these in commits and PRs.
-3. Checkout branch: `git checkout $BASE_BRANCH && git checkout -b sdlc-$PROJECT-<current_story> 2>/dev/null || git checkout sdlc-$PROJECT-<current_story>`
-   Create from sdlc-$PROJECT if it doesn't exist; switch to it if it does.
+3. Checkout branch — **always pull base first so this story starts from merged prior work**:
+   ```bash
+   git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
+   git checkout -b sdlc-$PROJECT-<current_story> 2>/dev/null || git checkout sdlc-$PROJECT-<current_story>
+   ```
 4. For each `[ ] pending` task under this story, in dependency order:
    - Implement following `docs/sdlc-$PROJECT-design.md` exactly
    - Write unit tests (TDD preferred)
@@ -464,7 +487,13 @@ sdlc github ingest-feedback sdlc-$PROJECT-<current_story> <current_story>
 ```
 
 - **approved or merged:**
+  **Merge the story PR into base branch immediately** — this is what keeps the next story conflict-free:
   ```bash
+  # Merge if not already merged (idempotent)
+  gh pr view sdlc-$PROJECT-<current_story> --json state -q '.state' | grep -q MERGED \
+    || gh pr merge sdlc-$PROJECT-<current_story> --merge --body ""
+  # Pull base so the next story branches from up-to-date code
+  git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
   sdlc github close-merged          # close story + task issues for merged PRs, move board to Done
   sdlc story complete               # prints "next: STORY-NNN" or "all_complete"
   sdlc github sync-board
@@ -501,7 +530,7 @@ You are a Technical Writer. All implementation stories are complete.
 #### 1. Checkout branch
 
 ```bash
-git checkout $BASE_BRANCH
+git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
 git checkout -b sdlc-$PROJECT-docs 2>/dev/null || git checkout sdlc-$PROJECT-docs
 ```
 
@@ -593,8 +622,10 @@ sdlc github ingest-feedback sdlc-$PROJECT-docs documentation
 ```
 
 - **approved or merged** → apply any feedback from `.sdlc/feedback/documentation.md`
-  to `apps/docs/docs/$PROJECT/`, rebuild (`cd apps/docs && npm run build`), commit and push, then:
+  to `apps/docs/docs/$PROJECT/`, rebuild (`cd apps/docs && npm run build`), commit and push, then **merge the docs PR and open the final project PR**:
   ```bash
+  gh pr merge sdlc-$PROJECT-docs --merge --body ""
+  git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
   sdlc state set done
   sdlc github sync-board    # closes all issues, moves board to Done
   ```
