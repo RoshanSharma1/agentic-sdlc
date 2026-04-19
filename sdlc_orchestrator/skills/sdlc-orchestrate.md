@@ -53,13 +53,16 @@ If this exits non-zero, another tick is already running — stop immediately.
 
 Read the active project name — you'll use it in all branch names:
 ```bash
-RAW_PROJECT=${SDLC_PROJECT:-$(cat .sdlc/active 2>/dev/null || echo "default")}
+# Derive PROJECT from the repo directory name (matches actual branch names)
+RAW_PROJECT=$(basename "$(pwd)")
 PROJECT=$(echo "$RAW_PROJECT" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | sed 's/--*/-/g;s/^-//;s/-$//')
 echo "Active project: $PROJECT"
 ```
 
 All phase branches are namespaced: `sdlc-$PROJECT-requirements`, `sdlc-$PROJECT-design`, etc.
 The working branch is `sdlc-$PROJECT`.
+
+> **Why `basename $(pwd)`?** The sdlc CLI derives branch slugs from the repo directory name (via `project_slug()`). Using `.sdlc/active` returns the internal project key (e.g. "default") which does not match branch names. Always use the directory-based slug.
 
 ---
 
