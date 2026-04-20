@@ -9,11 +9,10 @@ import click
 import yaml
 from rich.panel import Panel
 
-from sdlc_orchestrator.state_machine import State, WorkflowState
+from sdlc_orchestrator.state_machine import Phase, Status, WorkflowState
 from sdlc_orchestrator.memory import GLOBAL_MEMORY_PATH, MemoryManager
 from sdlc_orchestrator.utils import (
     create_symlink, project_slug, sdlc_home, update_gitignore,
-    get_active_project, set_active_project,
 )
 from sdlc_orchestrator.commands import console
 
@@ -155,17 +154,16 @@ def init_sdlc_dirs(project_dir: Path) -> None:
         (home / sub).mkdir(parents=True, exist_ok=True)
 
 
-def set_initial_state(project_dir: Path, phase: str) -> None:
-    phase_map = {
-        "requirement":    State.REQUIREMENT_IN_PROGRESS,
-        "design":         State.DESIGN_IN_PROGRESS,
-        "planning":       State.TASK_PLAN_IN_PROGRESS,
-        "implementation": State.STORY_IN_PROGRESS,
-        "validation":     State.STORY_IN_PROGRESS,
-        "review":         State.STORY_AWAITING_REVIEW,
-    }
+def set_initial_state(project_dir: Path, phase: str = "requirement") -> None:
     wf = WorkflowState(project_dir)
-    wf._data["state"] = phase_map.get(phase, State.REQUIREMENT_IN_PROGRESS).value
+    try:
+        p = Phase(phase)
+    except ValueError:
+        p = Phase.REQUIREMENT
+    wf._data["phase"] = p.value
+    wf._data["status"] = Status.IN_PROGRESS.value
+    if p != Phase.DONE:
+        wf._data.setdefault("phases", {})[p.value] = {"status": Status.IN_PROGRESS.value}
     wf.save()
 
 
@@ -175,7 +173,7 @@ def setup_github_board(project_dir: Path, spec: dict) -> None:
     if not repo or not github.is_available():
         return
     wf = WorkflowState(project_dir)
-    if wf.github_project or wf.github_project_id:
+    if wf.github_project:
         console.print("  [dim]GitHub project board already exists — skipped[/dim]")
         return
     project_info = github.create_project_board(spec.get("project_name", ""), repo)
@@ -211,11 +209,9 @@ def common_setup(project_dir: Path, spec: dict, is_new: bool, upgrade_skills: bo
     ensure_global_memory()
     init_sdlc_dirs(project_dir)
 
-    active = get_active_project(project_dir)
-    create_symlink(project_dir, active)
     slug = project_slug(project_dir)
-    link_name = slug if active == slug else f"{slug}-{active}"
-    console.print(f"  [green]✓[/green] symlink ~/.sdlc/projects/{link_name} → .sdlc/projects/{active}/")
+    create_symlink(project_dir)
+    console.print(f"  [green]✓[/green] symlink ~/.sdlc/projects/{slug} → {project_dir}/")
 
     executor = spec.get("executor", "claude-code")
     mem = MemoryManager(project_dir)
@@ -320,7 +316,6 @@ def _setup_new(upgrade_skills: bool, no_approvals: bool = False) -> None:
     if not (project_dir / ".git").exists():
         subprocess.run(["git", "init", "-q"], cwd=project_dir)
 
-    set_active_project(project_dir, slug)
     spec = {
         "project_name": name, "description": "", "tech_stack": "",
         "repo": "", "slack_webhook": "", "executor": "claude-code",
@@ -347,14 +342,7 @@ def _setup_local(project_dir: Path, upgrade_skills: bool, no_approvals: bool = F
         style="blue",
     ))
 
-    # Determine project name: use existing active, or derive from directory name
-    existing_active = (project_dir / ".sdlc" / "active")
-    if not existing_active.exists():
-        proj_name = re.sub(r"[^a-z0-9-]", "-", project_dir.name.lower()).strip("-")
-        set_active_project(project_dir, proj_name)
-
-    active = get_active_project(project_dir)
-    spec_path = project_dir / ".sdlc" / "projects" / active / "spec.yaml"
+    spec_path = sdlc_home(project_dir) / "spec.yaml"
     if spec_path.exists():
         spec = yaml.safe_load(spec_path.read_text()) or {}
     else:

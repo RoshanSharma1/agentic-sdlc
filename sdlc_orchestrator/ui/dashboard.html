@@ -21,7 +21,7 @@ h1 { font-size: 1.3rem; font-weight: 700; color: #f8fafc; }
 .project-meta { font-size: 0.68rem; color: #475569; margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .meta-tag { display: inline-flex; align-items: center; gap: 3px; background: #161b27; border: 1px solid #2d3748; border-radius: 6px; padding: 2px 7px; font-size: 0.65rem; color: #64748b; text-decoration: none; }
 .meta-tag:hover { color: #60a5fa; border-color: #3b82f6; }
-.meta-tag.branch { color: #a78bfa; border-color: #4c1d95; background: #1a1040; }
+.branch-tag { font-size: 0.6rem; color: #a78bfa; text-align: right; word-break: break-all; line-height: 1.4; margin-top: 2px; }
 .state-badge { font-size: 0.65rem; padding: 3px 8px; border-radius: 20px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
 .state-active { background: #1e3a5f; color: #60a5fa; }
 .state-gate   { background: #3b2a1a; color: #fb923c; }
@@ -62,6 +62,11 @@ h1 { font-size: 1.3rem; font-weight: 700; color: #f8fafc; }
 .task-check.done { background: #4ade80; border-color: #4ade80; }
 .task-text { font-size: 0.68rem; color: #475569; line-height: 1.4; }
 .task-text.done { color: #4ade80; }
+.link-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 0.6rem; color: #60a5fa; text-decoration: none; border: 1px solid #1e3a5f; background: #111827; border-radius: 6px; padding: 1px 5px; white-space: nowrap; }
+.link-chip.artifact { color: #a78bfa; border-color: #4c1d95; }
+.link-chip.commit { color: #22c55e; border-color: #14532d; }
+.link-chip:hover { border-color: #60a5fa; color: #bfdbfe; }
+.task-links { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-left: 2px; }
 /* ── Actions ── */
 .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px; }
 .btn { font-size: 0.73rem; padding: 9px 8px; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; text-align: center; transition: opacity 0.15s; -webkit-tap-highlight-color: transparent; }
@@ -70,6 +75,8 @@ h1 { font-size: 1.3rem; font-weight: 700; color: #f8fafc; }
 .btn-approve { background: #16a34a; color: #fff; grid-column: 1 / -1; }
 .btn-skip    { background: #92400e; color: #fbbf24; }
 .btn-restore { background: #1e2d3d; color: #60a5fa; }
+.btn-hold    { background: #3b2a1a; color: #fb923c; }
+.btn-resume  { background: #14291f; color: #4ade80; }
 
 /* ── Chat FAB ── */
 .chat-fab { position: fixed; bottom: 28px; right: 28px; width: 56px; height: 56px; border-radius: 50%; background: linear-gradient(135deg,#3b82f6,#6366f1); border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 1.5rem; box-shadow: 0 4px 24px #3b82f644; z-index: 200; transition: transform .2s, opacity .2s; }
@@ -204,23 +211,50 @@ h1 { font-size: 1.3rem; font-weight: 700; color: #f8fafc; }
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script>
 let expanded = {};
+let expandedClosed = {};
 
 const PHASE_LABELS = { requirement:'Requirements', design:'Design', planning:'Planning', implementation:'Implementation', documentation:'Documentation' };
 
 function stateClass(p) {
-  if (p.state === 'done') return 'state-done';
+  if (p.phase === 'done') return 'state-done';
   if (p.at_gate) return 'state-gate';
   return 'state-active';
 }
 
+function escapeAttr(value) {
+  return String(value || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function linkChip(url, label, cls='', title='') {
+  if (!url) return '';
+  return `<a class="link-chip ${cls}" href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer" title="${escapeAttr(title || label)}" onclick="event.stopPropagation()">${label}</a>`;
+}
+
+function prLabel(url) {
+  const id = String(url || '').split('/').filter(Boolean).pop();
+  return id ? `↗ PR #${id}` : '↗ PR';
+}
+
+function commitLabel(url, idx) {
+  const sha = String(url || '').split('/').filter(Boolean).pop() || '';
+  return sha.match(/^[0-9a-f]{7,40}$/i) ? `◈ ${sha.slice(0,7)}` : `◈ ${idx + 1}`;
+}
+
+function commitLinks(urls) {
+  return (urls || []).map((url, idx) => linkChip(url, commitLabel(url, idx), 'commit', 'Open commit')).join('');
+}
+
 function renderProject(p) {
   const pr = p.pr_links || {};
+  const artLinks = p.artifact_links || {};
+  const commits = p.commit_links || {};
   const repoUrl = p.repo ? `https://github.com/${p.repo}` : '';
   const metaTags = [
-    p.repo ? `<a class="meta-tag" href="${repoUrl}" target="_blank">⎇ ${p.repo.split('/')[1]||p.repo}</a>` : '',
-    p.branch ? `<span class="meta-tag branch">🌿 ${p.branch.replace('worktree/','')}</span>` : '',
+    p.repo ? `<a class="meta-tag" href="${repoUrl}" target="_blank" rel="noopener noreferrer">⎇ ${p.repo.split('/')[1]||p.repo}</a>` : '',
+    p.state_url ? `<a class="meta-tag" href="${p.state_url}" target="_blank" rel="noopener noreferrer">{} state</a>` : '',
     `<span class="meta-tag">🕐 ${p.last_updated||'—'}</span>`,
   ].filter(Boolean).join('');
+  const branchTag = p.branch ? `<div class="branch-tag">🌿 ${p.branch.replace('worktree/','')}</div>` : '';
 
   // Phase chevron pipeline - each step independently clickable
   const phaseSegs = p.phases.map(ph => {
@@ -232,28 +266,37 @@ function renderProject(p) {
     const pkey = `${p.name}::phase::${ph.name}`;
     const pOpen = !!expanded[pkey];
     if (!pOpen) return '';
-    const phStories = ph.name === 'implementation' ? p.stories.filter(s=>s.id.match(/^STORY-\d+$/)) : ph.name === 'requirement' ? p.stories.filter(s=>s.id==='STORY-REQ') : ph.name === 'design' ? p.stories.filter(s=>s.id==='STORY-DES') : ph.name === 'planning' ? p.stories.filter(s=>s.id==='STORY-PLN') : ph.name === 'documentation' ? p.stories.filter(s=>s.id==='STORY-DOC') : [];
-    const prLink = pr[ph.name] ? `<a href="${pr[ph.name]}" target="_blank" style="font-size:0.65rem;color:#60a5fa;text-decoration:none">↗ PR #${pr[ph.name].split('/').pop()}</a>` : '';
+    const phStories = ph.stories || [];
+    const prHref = ph.pr_url || pr[ph.name] || '';
+    const artHref = ph.artifact_url || artLinks[ph.name] || '';
+    const prLink = prHref ? linkChip(prHref, prLabel(prHref), '', 'Open pull request') : '';
+    const artLink = artHref ? linkChip(artHref, '📄 artifact', 'artifact', 'Open artifact') : '';
+    const phCommitLinks = commitLinks(ph.commit_urls || commits[ph.name] || []);
     const storyRows = phStories.map(s => {
       const skey = `${p.name}::${s.id}`;
       const sOpen = !!expanded[skey];
-      const doneTasks = s.tasks.filter(t=>t.done).length;
+      const doneTasks = s.tasks.filter(t=>t.status==='done').length;
       const pct = s.tasks.length ? Math.round(doneTasks/s.tasks.length*100) : (s.status==='done'?100:0);
-      const fillClass = s.status==='done'?'done':s.status==='active'?'active':'pending';
+      const fillClass = s.status==='done'?'done':s.status==='in_progress'?'active':'pending';
+      const storyPr = s.pr_url || pr[s.id] || '';
+      const storyCommits = commitLinks(s.commit_urls || commits[s.id] || []);
       const taskRows = s.tasks.map(t=>`
         <div class="task-row">
-          <div class="task-check ${t.done?'done':''}"></div>
-          <span class="task-text ${t.done?'done':''}">${t.id}: ${t.title}</span>
+          <div class="task-check ${t.status==='done'?'done':''}"></div>
+          <span class="task-text ${t.status==='done'?'done':''}">${t.id}${t.name?': '+t.name:''}</span>
+          <span class="task-links">${commitLinks(t.commit_urls || commits[`${s.id}::${t.id}`] || commits[t.id] || [])}</span>
         </div>`).join('');
       return `
         <div style="margin:4px 0 0 8px">
           <div class="story-bar-row" onclick="event.stopPropagation();toggleStory('${skey}');render(window._data)">
-            <span class="story-bar-id">${s.id}</span>
+            <span class="story-bar-id" title="${s.name||''}">${s.id}</span>
             <div class="story-bar-track"><div class="story-bar-fill ${fillClass}" style="width:${pct}%"></div></div>
             <span style="font-size:0.6rem;color:#475569;width:28px;text-align:right;flex-shrink:0">${doneTasks}/${s.tasks.length}</span>
-            ${pr[s.id]?`<a class="story-bar-pr" href="${pr[s.id]}" target="_blank" onclick="event.stopPropagation()">↗</a>`:''}
+            ${storyPr?`<a class="story-bar-pr" href="${storyPr}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">↗</a>`:''}
+            ${storyCommits}
             ${s.tasks.length?`<span style="font-size:0.55rem;color:#334155;margin-left:2px">${sOpen?'▲':'▼'}</span>`:''}
           </div>
+          ${s.name?`<div style="font-size:0.63rem;color:#475569;padding:1px 0 3px 0;margin-left:2px">${s.name}</div>`:''}
           ${s.tasks.length?`<div class="story-tasks ${sOpen?'open':''}">${taskRows}</div>`:''}
         </div>`;
     }).join('');
@@ -261,6 +304,8 @@ function renderProject(p) {
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:${phStories.length?'8px':'0'}">
         <span style="font-size:0.75rem;font-weight:600;color:${ph.status==='done'?'#4ade80':ph.status==='active'?'#60a5fa':'#475569'}">${PHASE_LABELS[ph.name]||ph.name}</span>
         ${prLink}
+        ${artLink}
+        ${phCommitLinks}
       </div>
       ${storyRows}
     </div>`;
@@ -272,13 +317,15 @@ function renderProject(p) {
   const storyBars = p.stories.map(s => {
     const skey = `${p.name}::${s.id}`;
     const sOpen = !!expanded[skey];
-    const doneTasks = s.tasks.filter(t=>t.done).length;
+    const doneTasks = s.tasks.filter(t=>t.status==='done').length;
     const pct = s.tasks.length ? Math.round(doneTasks/s.tasks.length*100) : (s.status==='done'?100:0);
-    const fillClass = s.status==='done'?'done':s.status==='active'?'active':'pending';
+    const fillClass = s.status==='done'?'done':s.status==='in_progress'?'active':'pending';
+    const storyPr = s.pr_url || pr[s.id] || '';
     const tasks = s.tasks.map(t=>`
       <div class="task-row">
-        <div class="task-check ${t.done?'done':''}"></div>
-        <span class="task-text ${t.done?'done':''}">${t.id}: ${t.title}</span>
+        <div class="task-check ${t.status==='done'?'done':''}"></div>
+        <span class="task-text ${t.status==='done'?'done':''}">${t.id}${t.name?': '+t.name:''}</span>
+        <span class="task-links">${commitLinks(t.commit_urls || commits[`${s.id}::${t.id}`] || commits[t.id] || [])}</span>
       </div>`).join('');
     return `
       <div class="story-bar-row" onclick="toggleStory('${skey}')">
@@ -287,21 +334,45 @@ function renderProject(p) {
           <div class="story-bar-fill ${fillClass}" style="width:${pct}%"></div>
         </div>
         <span style="font-size:0.6rem;color:#475569;width:28px;text-align:right;flex-shrink:0">${doneTasks}/${s.tasks.length}</span>
-        ${pr[s.id]?`<a class="story-bar-pr" href="${pr[s.id]}" target="_blank" onclick="event.stopPropagation()">↗</a>`:''}
+        ${storyPr?`<a class="story-bar-pr" href="${storyPr}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">↗</a>`:''}
+        ${commitLinks(s.commit_urls || commits[s.id] || [])}
       </div>
       ${s.tasks.length?`<div class="story-tasks ${sOpen?'open':''}">${tasks}</div>`:''}`;
   }).join('');
 
   const approveDisabled = !p.at_gate ? 'disabled' : '';
+  const isHeld = !!p.held;
+  
+  // Process status badge
+  const ps = p.process_status || {};
+  const procStatus = ps.status || 'unknown';
+  let procBadge = '';
+  if (p.phase === 'done') {
+    // state-badge already shows done — no extra badge needed
+  } else if (isHeld) {
+    procBadge = '<span style="font-size:0.6rem;background:#3b2a1a;color:#fb923c;padding:2px 8px;border-radius:10px;font-weight:600">⏸ held</span>';
+  } else if (procStatus === 'running') {
+    procBadge = '<span style="font-size:0.6rem;background:#14291f;color:#4ade80;padding:2px 8px;border-radius:10px;font-weight:600">▶ running</span>';
+  } else if (procStatus === 'stopped') {
+    procBadge = '<span style="font-size:0.6rem;background:#3b1a1a;color:#f87171;padding:2px 8px;border-radius:10px;font-weight:600">⏹ stopped</span>';
+  } else if (procStatus === 'waiting') {
+    procBadge = '<span style="font-size:0.6rem;background:#3b2a1a;color:#fb923c;padding:2px 8px;border-radius:10px;font-weight:600">⏸ waiting</span>';
+  } else if (procStatus === 'stale') {
+    procBadge = '<span style="font-size:0.6rem;background:#3b2a1a;color:#fbbf24;padding:2px 8px;border-radius:10px;font-weight:600">⚠ stale</span>';
+  }
 
   return `
-  <div class="card">
+  <div class="card" style="${isHeld ? 'opacity:0.75;border-color:#3b2a1a' : ''}">
     <div class="card-header">
-      <div style="min-width:0">
+      <div style="flex:1;min-width:0">
         <div class="project-name">${p.display_name}</div>
         <div class="project-meta">${metaTags}</div>
       </div>
-      <span class="state-badge ${stateClass(p)}">${p.state.replace(/_/g,' ')}</span>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;min-width:0;max-width:45%">
+        <span class="state-badge ${stateClass(p)}">${(p.label||p.phase).replace(/_/g,' ')}</span>
+        ${procBadge}
+        ${branchTag}
+      </div>
     </div>
 
     <div style="margin-bottom:6px">
@@ -310,14 +381,28 @@ function renderProject(p) {
     ${phaseDetail}
 
     <div class="actions">
-      <button class="btn btn-approve" ${approveDisabled} onclick="action('${p.name}','approve')">✓ Approve Gate</button>
-      <button class="btn btn-skip" onclick="action('${p.name}','no-approvals')">⚡ Skip All</button>
-      <button class="btn btn-restore" onclick="action('${p.name}','approvals')">↺ Restore</button>
+      ${p.phase === 'done'
+        ? ''
+        : procStatus === 'stopped' || procStatus === 'stale'
+          ? '<button class="btn btn-resume" style="grid-column:1/-1" onclick="startLoop(\''+p.name+'\')">▶ Start Loop</button>'
+          : isHeld || procStatus === 'stopped' || procStatus === 'stale'
+            ? ''
+            : '<button class="btn btn-approve" '+approveDisabled+' onclick="action(\''+p.name+'\',\'approve\')">✓ Approve Gate</button>'
+      }
+      ${p.phase === 'done' ? '' :
+        isHeld
+          ? '<button class="btn btn-resume" onclick="action(\''+p.name+'\',\'resume\')">▶ Resume</button>'
+          : procStatus === 'stopped' || procStatus === 'stale'
+            ? ''
+            : '<button class="btn btn-hold" onclick="action(\''+p.name+'\',\'hold\')">⏸ Hold</button>'
+      }
+      ${p.phase === 'done' || procStatus === 'stopped' || procStatus === 'stale' ? '' : '<button class="btn btn-skip" '+(isHeld ? 'disabled' : '')+' onclick="action(\''+p.name+'\',\'no-approvals\')">⚡ Skip All</button><button class="btn btn-restore" '+(isHeld ? 'disabled' : '')+' onclick="action(\''+p.name+'\',\'approvals\')">↺ Restore</button>'}
     </div>
   </div>`;
 }
 
 function toggleStory(key) { expanded[key] = !expanded[key]; render(window._data); }
+function toggleClosed(name) { expandedClosed[name] = !expandedClosed[name]; render(window._data); }
 function toggleExpanded(key) {
   const isOpen = !!expanded[key];
   // If it's a phase key, collapse all other phases for this project
@@ -339,20 +424,39 @@ function render(data) {
   const active = data.active || [];
   const closed = data.closed || [];
   if (!active.length && !closed.length) { el.innerHTML = '<p style="color:#475569;text-align:center;padding:40px 0">No projects found.</p>'; return; }
-  let html = active.map(renderProject).join('');
+  let html = active.map(p => {
+    try { return renderProject(p); }
+    catch(e) { console.error('renderProject failed for', p.name, e); return `<div class="card"><div class="card-header"><div class="project-name">${p.display_name||p.name}</div></div><div style="color:#f87171;font-size:0.72rem;padding:8px">Render error: ${e.message}</div></div>`; }
+  }).join('');
   if (closed.length) {
-    html += `<div style="grid-column:1/-1;margin-top:8px">
+    const expandedClosedCards = closed.filter(p => expandedClosed[p.name]);
+    html += `<div style="grid-column:1/-1;margin-top:16px">
       <div style="font-size:0.68rem;color:#475569;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Closed (${closed.length})</div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px">
-        ${closed.map(p=>`<div style="background:#161b27;border:1px solid #2d3748;border-radius:8px;padding:8px 14px;font-size:0.76rem"><span style="color:#4ade80">✓</span><span style="color:#64748b;margin-left:6px">${p.display_name||p.name}</span></div>`).join('')}
-      </div></div>`;
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:${expandedClosedCards.length?'14px':'0'}">
+        ${closed.map(p => {
+          const isOpen = !!expandedClosed[p.name];
+          return `<div onclick="toggleClosed('${p.name}')" style="cursor:pointer;background:${isOpen?'#1e2d3d':'#161b27'};border:1px solid ${isOpen?'#3b82f6':'#2d3748'};border-radius:8px;padding:8px 14px;font-size:0.76rem;transition:border-color .15s,background .15s;user-select:none">
+            <span style="color:#4ade80">✓</span>
+            <span style="color:${isOpen?'#e2e8f0':'#64748b'};margin-left:6px">${p.display_name||p.name}</span>
+          </div>`;
+        }).join('')}
+      </div>
+      ${expandedClosedCards.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px">${
+        expandedClosedCards.map(p => { try { return renderProject(p); } catch(e) { return `<div class="card"><div class="project-name">${p.display_name||p.name}</div><div style="color:#f87171;font-size:0.72rem;padding:8px">Render error: ${e.message}</div></div>`; } }).join('')
+      }</div>` : ''}
+    </div>`;
   }
   el.innerHTML = html;
 }
 
 async function load() {
-  try { render(await (await fetch('/api/projects',{headers:{'ngrok-skip-browser-warning':'1'}})).json()); }
-  catch(e) { console.error(e); }
+  try {
+    const data = await (await fetch('/api/projects',{headers:{'ngrok-skip-browser-warning':'1'}})).json();
+    render(data);
+  } catch(e) {
+    console.error('load failed', e);
+    document.getElementById('projects').innerHTML = `<p style="color:#f87171;text-align:center;padding:40px 0">Failed to load: ${e.message}</p>`;
+  }
 }
 
 async function action(name, type) {
@@ -362,6 +466,15 @@ async function action(name, type) {
     toast(r.ok?(d.output||'Done ✓'):(d.detail||'Error'),r.ok);
     if (r.ok) load();
   } catch(e) { toast('Request failed',false); }
+}
+
+async function startLoop(name) {
+  try {
+    const r = await fetch(`/api/projects/${encodeURIComponent(name)}/start-loop`,{method:'POST'});
+    const d = await r.json();
+    toast(r.ok?'Loop started ✓':(d.detail||'Error'),r.ok);
+    if (r.ok) setTimeout(load, 1000);
+  } catch(e) { toast('Failed to start loop',false); }
 }
 
 function toast(msg,ok=true) {

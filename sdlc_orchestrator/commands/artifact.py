@@ -15,6 +15,18 @@ def artifact():
     pass
 
 
+@artifact.command("set")
+@click.argument("key")
+@click.argument("path")
+def artifact_set(key, path):
+    """Record an artifact path in state.json (e.g. requirements docs/sdlc/myproject/requirements.md)."""
+    from sdlc_orchestrator.state_machine import WorkflowState
+    project_dir = require_project()
+    wf = WorkflowState(project_dir)
+    wf.mark_artifact(key, path)
+    click.echo(f"artifact: {key} → {path}")
+
+
 @artifact.command("read")
 @click.argument("name")
 def artifact_read(name):

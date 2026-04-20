@@ -4,7 +4,7 @@ import sys
 
 import click
 
-from sdlc_orchestrator.state_machine import State
+from sdlc_orchestrator.state_machine import Phase, StoryStatus, WorkflowState
 from sdlc_orchestrator.commands import make_workflow_state, require_project
 
 
@@ -16,24 +16,17 @@ def story():
 
 @story.command("start")
 @click.argument("story_id")
-def story_start(story_id):
-    """Set the active story and transition to story_in_progress."""
+def story_start(story_id: str):
+    """Begin work on a story (transitions to implementation:in_progress)."""
     project_dir = require_project()
     wf = make_workflow_state(project_dir)
-    wf.set_current_story(story_id)
-    if wf.state != State.STORY_IN_PROGRESS:
-        try:
-            wf.transition(State.STORY_IN_PROGRESS)
-        except ValueError:
-            wf._data["state"] = State.STORY_IN_PROGRESS.value
-            wf._data["approval_needed"] = False
-            wf.save()
+    wf.start_story(story_id)
     click.echo(f"started: {story_id}")
 
 
 @story.command("complete")
 def story_complete():
-    """Mark the current story as approved and advance to the next story or done."""
+    """Mark the current story approved; print next story id or 'all_complete'."""
     project_dir = require_project()
     wf = make_workflow_state(project_dir)
     if not wf.current_story:
@@ -41,34 +34,46 @@ def story_complete():
         sys.exit(1)
 
     story_id = wf.current_story
-    wf.complete_current_story()
+    next_story = wf.complete_story()
 
-    # Mark all tasks for this story as done in the plan file
     _mark_story_tasks_done(project_dir, story_id)
 
-    all_stories = sorted(wf.github_story_items.keys())
-    pending = [s for s in all_stories if s not in wf.completed_stories]
-
-    if pending:
-        click.echo(f"next: {pending[0]}")
+    if next_story:
+        click.echo(f"next: {next_story}")
     else:
         click.echo("all_complete")
+
+
+@story.command("task-start")
+@click.argument("story_id")
+@click.argument("task_id")
+def task_start(story_id: str, task_id: str):
+    """Mark a task as in_progress within a story."""
+    project_dir = require_project()
+    wf = make_workflow_state(project_dir)
+    wf.update_task(story_id, task_id, "in_progress")
+    click.echo(f"started: {story_id}/{task_id}")
+
+
+@story.command("task-done")
+@click.argument("story_id")
+@click.argument("task_id")
+def task_done(story_id: str, task_id: str):
+    """Mark a task as done within a story."""
+    project_dir = require_project()
+    wf = make_workflow_state(project_dir)
+    wf.update_task(story_id, task_id, "done")
+    click.echo(f"done: {story_id}/{task_id}")
 
 
 def _mark_story_tasks_done(project_dir, story_id: str) -> None:
     """Update plan file to mark all tasks under story_id as done."""
     import re
-    from pathlib import Path
     from sdlc_orchestrator.utils import project_slug
 
     slug = project_slug(project_dir)
-    candidates = [
-        project_dir / f"docs/sdlc-{slug}-plan.md",
-        project_dir.parent / f"docs/sdlc-{slug}-plan.md",
-        project_dir.parent.parent / f"docs/sdlc-{slug}-plan.md",
-    ]
-    plan_path = next((p for p in candidates if p.exists()), None)
-    if not plan_path:
+    plan_path = project_dir / f"docs/sdlc-{slug}-plan.md"
+    if not plan_path.exists():
         return
 
     lines = plan_path.read_text().splitlines()
@@ -80,9 +85,7 @@ def _mark_story_tasks_done(project_dir, story_id: str) -> None:
         elif re.match(r"^#{1,2}\s+STORY-\d+", line):
             in_story = False
         if in_story:
-            # Mark Status: [ ] as Status: [x]
             line = re.sub(r"(Status:\s*)\[ \]", r"\1[x]", line, flags=re.I)
-            # Mark checkbox tasks: - [ ] TASK
             line = re.sub(r"^(\s*[-*]\s+)\[ \]", r"\1[x]", line)
         updated.append(line)
     plan_path.write_text("\n".join(updated) + "\n")

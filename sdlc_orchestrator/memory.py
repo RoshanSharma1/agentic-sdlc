@@ -5,8 +5,8 @@
   Layer 2 — project.md  : stack, architecture, domain language, constraints
   Layer 3 — state.json  : execution memory (phase, state, tasks, decisions)
 
-All state files live under sdlc_home(project_dir) — which resolves to
-project/.sdlc/ via the ~/.sdlc/projects/<slug> symlink.
+All state files live under sdlc_home(project_dir), which resolves to
+project/.sdlc/ for the current worktree.
 
 CLAUDE.md lives in the project root (not .sdlc/) so Claude Code finds it.
 """

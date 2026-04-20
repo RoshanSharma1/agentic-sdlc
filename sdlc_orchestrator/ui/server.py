@@ -8,12 +8,14 @@ import subprocess
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
-from sdlc_orchestrator.state_machine import APPROVAL_STATES, WorkflowState
+from sdlc_orchestrator.state_machine import Phase, Status, WorkflowState
 from sdlc_orchestrator.memory import MemoryManager
+from sdlc_orchestrator.utils import get_active_project, sdlc_home
 
 app = FastAPI(title="SDLC Dashboard")
 
@@ -98,24 +100,143 @@ def clear_chat():
 
 # ── Chat ──────────────────────────────────────────────────────────────────────
 
+def _global_repo_roots() -> list[Path]:
+    """Discover all known repo roots from ~/.sdlc/projects/ symlinks and _project_dir."""
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(p: Path) -> None:
+        try:
+            resolved = p.resolve()
+        except Exception:
+            return
+        if resolved not in seen and resolved.exists():
+            seen.add(resolved)
+            roots.append(resolved)
+
+    _add(_project_dir)
+
+    registry = Path.home() / ".sdlc" / "projects"
+    if not registry.is_dir():
+        return roots
+
+    for link in registry.iterdir():
+        if not link.is_symlink():
+            continue
+        # Read raw target string — works even for stale symlinks
+        try:
+            raw_target = Path(str(link.readlink()) if hasattr(link, "readlink") else __import__("os").readlink(str(link)))
+        except Exception:
+            continue
+
+        # Canonicalise: if relative, make it absolute relative to link parent
+        if not raw_target.is_absolute():
+            raw_target = (link.parent / raw_target).resolve()
+
+        target_str = str(raw_target)
+
+        # Extract repo root by splitting on /worktree/
+        if "/worktree/" in target_str:
+            repo_root = Path(target_str.split("/worktree/")[0])
+            _add(repo_root)
+            continue
+
+        # Fallback: try resolving live
+        try:
+            target = link.resolve()
+        except Exception:
+            continue
+        if not target.exists():
+            continue
+        if (target / ".sdlc").is_dir():
+            if target.parent.name == "worktree":
+                _add(target.parent.parent)
+            else:
+                _add(target.parent)
+        elif (target / "worktree").is_dir():
+            _add(target)
+        else:
+            _add(target.parent)
+
+    return roots
+
+
+def _resolve_project_dir(name: str) -> Path:
+    """Resolve a dashboard project slug to the worktree or archive that owns its .sdlc state."""
+    for root in _global_repo_roots():
+        worktree_root = root / "worktree"
+        if worktree_root.exists():
+            for child in worktree_root.iterdir():
+                if child.is_dir() and _has_project_state(child):
+                    if child.name == name or get_active_project(child) == name:
+                        return child
+        archive = root / ".projects" / name
+        if archive.is_dir() and _has_project_state(archive):
+            return archive
+
+    raise HTTPException(404, f"SDLC project not found: '{name}'")
+
+
+def _has_project_state(project_dir: Path) -> bool:
+    sdlc_dir = project_dir / ".sdlc"
+    return (sdlc_dir / "spec.yaml").exists() or (sdlc_dir / "workflow" / "state.json").exists()
+
+
+
+def _known_project_entries() -> list[tuple[Path, str]]:
+    entries: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
+    for root in _global_repo_roots():
+        worktree_root = root / "worktree"
+        if not worktree_root.exists():
+            continue
+        for child in worktree_root.iterdir():
+            if not child.is_dir():
+                continue
+            try:
+                project_dir = child.resolve()
+            except Exception:
+                continue
+            if not _has_project_state(project_dir) or project_dir in seen:
+                continue
+            seen.add(project_dir)
+            entries.append((project_dir, get_active_project(project_dir)))
+    return entries
+
+
+def _known_archive_entries() -> list[tuple[Path, str]]:
+    """Return (project_dir, name) for completed projects archived under .projects/."""
+    entries: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
+    for root in _global_repo_roots():
+        archive_root = root / ".projects"
+        if not archive_root.exists():
+            continue
+        for child in sorted(archive_root.iterdir()):
+            if not child.is_dir():
+                continue
+            resolved = child.resolve()
+            if resolved in seen:
+                continue
+            if _has_project_state(child):
+                seen.add(resolved)
+                entries.append((child, child.name))
+    return entries
+
 def _build_sdlc_context() -> str:
     """Build a brief SDLC state summary to inject as context."""
     try:
-        active_file = _project_dir / ".sdlc" / "active"
-        if not active_file.exists():
+        entries = _known_project_entries()
+        if not entries:
             return ""
-        names = [n.strip() for n in active_file.read_text().splitlines() if n.strip()]
         lines = ["Current SDLC project states (as of now):"]
-        for name in names:
-            worktree = _project_dir / "worktree" / name
-            wf_dir = worktree if worktree.exists() else _project_dir
+        for wf_dir, name in entries:
             try:
                 wf = WorkflowState(wf_dir)
                 spec = MemoryManager(wf_dir).spec()
                 display = spec.get("project_name", name)
-                state = wf.state.value
                 done = len(wf.completed_stories)
-                lines.append(f"- {display} (slug: {name}): state={state}, completed_stories={done}, last_updated={wf._data.get('last_updated','')[:19]}")
+                lines.append(f"- {display} (slug: {name}): {wf.phase.value}:{wf.status.value}, completed_stories={done}, last_updated={wf._data.get('last_updated','')[:19]}")
             except Exception:
                 lines.append(f"- {name}: (unreadable)")
         return "\n".join(lines)
@@ -198,188 +319,377 @@ def chat_poll(job_id: str, offset: int = 0):
 
 # ── Projects ──────────────────────────────────────────────────────────────────
 
-PHASES = ["requirement", "design", "planning", "implementation", "documentation"]
 
-PHASE_STATES = {
-    "requirement":    ("requirement_in_progress", "requirement_ready_for_approval"),
-    "design":         ("design_in_progress", "awaiting_design_approval"),
-    "planning":       ("task_plan_in_progress", "task_plan_ready"),
-    "implementation": ("story_in_progress", "story_awaiting_review", "feedback_incorporation"),
-    "documentation":  ("documentation_in_progress", "documentation_awaiting_approval"),
+PHASES = [p.value for p in Phase if p != Phase.DONE]
+PHASE_ARTIFACT_KEYS: dict[str, list[str]] = {
+    Phase.REQUIREMENT.value: ["requirements", "requirement_questions"],
+    Phase.DESIGN.value: ["design"],
+    Phase.PLANNING.value: ["plan"],
+    Phase.DOCUMENTATION.value: ["documentation", "docs", "review_summary"],
 }
-
-STATE_PHASE_INDEX: dict[str, int] = {}
-for _i, (_phase, _states) in enumerate(PHASE_STATES.items()):
-    for _s in _states:
-        STATE_PHASE_INDEX[_s] = _i
-STATE_PHASE_INDEX["done"] = len(PHASES)
+_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$", re.IGNORECASE)
 
 
-def _parse_plan(plan_path: Path) -> dict[str, dict]:
-    text = None
-    if plan_path.exists():
-        text = plan_path.read_text()
-    else:
-        # Try reading from git branch sdlc-<name>-plan
-        import subprocess
-        fname = plan_path.name
-        slug = re.sub(r'^sdlc-|-plan\.md$', '', fname)
-        branch = f"sdlc-{slug}-plan"
-        repo = plan_path.parent.parent  # docs/../ = repo root
+def _repo_slug(repo_raw: str) -> str:
+    repo = (repo_raw or "").strip()
+    repo = repo.removeprefix("https://github.com/")
+    repo = repo.removeprefix("http://github.com/")
+    repo = repo.removeprefix("git@github.com:")
+    repo = repo.removeprefix("github.com/")
+    repo = repo.removesuffix(".git")
+    return repo.strip("/")
+
+
+def _flatten_values(value: Any) -> list[Any]:
+    if value is None or value is False:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        out: list[Any] = []
+        for item in value:
+            out.extend(_flatten_values(item))
+        return out
+    return [value]
+
+
+def _first_url(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("url", "html_url", "permalink", "href"):
+            url = value.get(key)
+            if isinstance(url, str) and url.startswith(("http://", "https://")):
+                return url
+    if isinstance(value, str) and value.startswith(("http://", "https://")):
+        return value
+    return ""
+
+
+def _pr_url(repo: str, value: Any) -> str:
+    if value is None or value is False:
+        return ""
+    if isinstance(value, dict):
+        url = _first_url(value)
+        if url:
+            return url
+        for key in ("number", "pr", "github_pr", "pull_request"):
+            url = _pr_url(repo, value.get(key))
+            if url:
+                return url
+        return ""
+    raw = str(value).strip()
+    if not raw:
+        return ""
+    url = _first_url(raw)
+    if url:
+        return url
+    match = re.search(r"(?:#|pull/)?(\d+)$", raw)
+    if repo and match:
+        return f"https://github.com/{repo}/pull/{match.group(1)}"
+    return ""
+
+
+def _commit_urls(repo: str, *values: Any) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def add(url: str) -> None:
+        if url and url not in seen:
+            seen.add(url)
+            urls.append(url)
+
+    for value in values:
+        for item in _flatten_values(value):
+            if isinstance(item, dict):
+                url = _first_url(item)
+                if url:
+                    add(url)
+                    continue
+                for key in ("sha", "hash", "commit", "commit_sha", "github_commit"):
+                    sha = item.get(key)
+                    if isinstance(sha, str) and _COMMIT_RE.match(sha.strip()) and repo:
+                        add(f"https://github.com/{repo}/commit/{sha.strip()}")
+                continue
+            raw = str(item).strip()
+            if raw.startswith(("http://", "https://")):
+                add(raw)
+            elif _COMMIT_RE.match(raw) and repo:
+                add(f"https://github.com/{repo}/commit/{raw}")
+    return urls
+
+
+def _artifact_link(name: str, key: str) -> str:
+    return f"/api/projects/{quote(name, safe='')}/artifact/{quote(key, safe='')}"
+
+
+def _state_link(name: str) -> str:
+    return f"/api/projects/{quote(name, safe='')}/state"
+
+
+def _artifact_path(project_dir: Path, raw_path: str) -> Path | None:
+    raw = Path(str(raw_path)).expanduser()
+    candidates = [raw] if raw.is_absolute() else [
+        project_dir / raw,
+        sdlc_home(project_dir) / raw,
+        sdlc_home(project_dir) / "workflow" / "artifacts" / raw,
+    ]
+    if not raw.is_absolute():
+        candidates.extend(root / raw for root in _global_repo_roots())
+    for candidate in candidates:
         try:
-            result = subprocess.run(
-                ["git", "show", f"{branch}:{plan_path.relative_to(repo)}"],
-                cwd=repo, capture_output=True, text=True
-            )
-            if result.returncode == 0:
-                text = result.stdout
+            resolved = candidate.resolve()
         except Exception:
-            pass
-    if not text:
-        return {}
-    stories: dict[str, dict] = {}
-    current = None
-    current_task = None
-    for line in text.splitlines():
-        sm = re.match(r"^#{1,2}\s+(STORY-[\w]+)[:：]?\s*(.*)", line)
-        if sm:
-            current = sm.group(1)
-            stories[current] = {"title": sm.group(2).strip(), "tasks": []}
-            current_task = None
             continue
-        if not current:
-            continue
-        # Task as heading: ## TASK-NNN: title
-        tm = re.match(r"^#{1,3}\s+(TASK-[\w-]+)[:：]?\s*(.*)", line)
-        if tm:
-            current_task = {"id": tm.group(1), "title": tm.group(2).strip(), "done": False}
-            stories[current]["tasks"].append(current_task)
-            continue
-        # Task as checkbox: - [ ] TASK-NNN: title
-        cm = re.match(r"^\s*[-*]\s+\[([ x])\]\s*(TASK-\d+)[:：]?\s*(.*)", line, re.I)
-        if cm:
-            current_task = {"id": cm.group(2), "title": cm.group(3).strip(), "done": cm.group(1).lower() == "x"}
-            stories[current]["tasks"].append(current_task)
-            continue
-        # Status line: - Status: [x]
-        if current_task:
-            st = re.match(r"^\s*[-*]?\s*Status:\s*\[([ x])\]", line, re.I)
-            if st:
-                current_task["done"] = st.group(1).lower() == "x"
-    return stories
+        if resolved.exists():
+            return resolved
+    return None
+
+
+def _safe_state_file(project_dir: Path, path: Path) -> Path:
+    resolved = path.resolve()
+    roots = [project_dir.resolve(), sdlc_home(project_dir).resolve()]
+    roots.extend(root.resolve() for root in _global_repo_roots())
+    if any(resolved == root or root in resolved.parents for root in roots):
+        return resolved
+    raise HTTPException(400, "Path is outside the SDLC project")
+
+
+def _task_out(tid: str, raw_task: Any, repo: str) -> dict[str, Any]:
+    task = raw_task if isinstance(raw_task, dict) else {"status": raw_task}
+    out = {"id": tid, **task}
+    out["commit_urls"] = _commit_urls(
+        repo,
+        task.get("commit"),
+        task.get("commits"),
+        task.get("commit_sha"),
+        task.get("commit_shas"),
+        task.get("github_commit"),
+    )
+    return out
 
 
 def _project_data(project_dir: Path, name: str) -> dict[str, Any]:
-    worktree = project_dir / "worktree" / name
-    wf_dir = worktree if worktree.exists() else project_dir
+    import os
+    import time
+    wf_dir = project_dir
+    if not _has_project_state(wf_dir):
+        return {"name": name, "error": "state unreadable"}
     try:
         wf = WorkflowState(wf_dir)
     except Exception:
         return {"name": name, "error": "state unreadable"}
     spec = MemoryManager(wf_dir).spec()
-    state = wf.state.value
-    phase_idx = STATE_PHASE_INDEX.get(state, 0)
-    phase_status = []
-    for i, phase in enumerate(PHASES):
-        if i < phase_idx:
-            status = "done"
-        elif i == phase_idx:
-            status = "active"
-        else:
-            status = "pending"
-        phase_status.append({"name": phase, "status": status})
-    plan_path = wf_dir / f"docs/sdlc-{name}-plan.md"
-    if not plan_path.exists():
-        # Try repo root (parent of worktree dir)
-        plan_path = wf_dir.parent.parent / f"docs/sdlc-{name}-plan.md"
-    if not plan_path.exists():
-        plan_path = wf_dir.parent / f"docs/sdlc-{name}-plan.md"
-    stories_data = _parse_plan(plan_path)
-    stories = []
-    for sid, sdata in stories_data.items():
-        done = sid in wf.completed_stories
-        active = sid == wf.current_story
-        stories.append({"id": sid, "title": sdata["title"], "status": "done" if done else ("active" if active else "pending"), "tasks": sdata["tasks"]})
-    at_gate = wf.state in APPROVAL_STATES
+
+    repo = _repo_slug(spec.get("repo", ""))
+    branch = wf._data.get("current_branch") or ""
+    base_branch = wf._data.get("base_branch", "main")
+    at_gate = wf.is_approval_gate()
     bypassed = [p for p, v in spec.get("phase_approvals", {}).items() if not v]
 
-    repo_raw = spec.get("repo", "")
-    repo = repo_raw.replace("github.com/", "").replace("https://github.com/", "") if repo_raw else ""
-    branch = wf._data.get("current_branch", "")
-    story_items = wf._data.get("github_story_items", {})
-    pr_links = {}
-    if repo:
-        for key, val in story_items.items():
-            num = val.get("number")
-            if num:
-                pr_links[key] = f"https://github.com/{repo}/pull/{num}"
+    # Build artifact links from state.json. These open the local artifact through
+    # the dashboard so archived or not-yet-merged artifacts still work.
+    artifact_links: dict[str, str] = {}
+    for art_key, path in wf.artifacts.items():
+        if path:
+            artifact_links[art_key] = _artifact_link(name, art_key)
+    for phase_key, keys in PHASE_ARTIFACT_KEYS.items():
+        for art_key in keys:
+            if wf.artifacts.get(art_key):
+                artifact_links[phase_key] = _artifact_link(name, art_key)
+                break
 
+    pr_links: dict[str, str] = {}
+    commit_links: dict[str, list[str]] = {}
+    for key, val in (wf._data.get("github_story_items", {}) or {}).items():
+        url = _pr_url(repo, val)
+        if url:
+            pr_links[key] = url
+    for phase_key, phase_val in wf._data.get("phases", {}).items():
+        phase_pr = _pr_url(repo, phase_val.get("github_pr") or phase_val.get("pr"))
+        phase_commits = _commit_urls(
+            repo,
+            phase_val.get("commit"),
+            phase_val.get("commits"),
+            phase_val.get("commit_sha"),
+            phase_val.get("commit_shas"),
+        )
+        if phase_pr:
+            pr_links[phase_key] = phase_pr
+        if phase_commits:
+            commit_links[phase_key] = phase_commits
+        for sid, story in phase_val.get("stories", {}).items():
+            pr = _pr_url(repo, story.get("github_pr") or story.get("pr") or story.get("pull_request"))
+            commits = _commit_urls(
+                repo,
+                story.get("commit"),
+                story.get("commits"),
+                story.get("commit_sha"),
+                story.get("commit_shas"),
+                story.get("github_commit"),
+            )
+            if pr:
+                pr_links[sid] = pr
+                if sid == phase_key:
+                    pr_links[phase_key] = pr
+            if commits:
+                commit_links[sid] = commits
+                if sid == phase_key:
+                    commit_links[phase_key] = commits
+
+    # Build phase list directly from phases dict in state.json.
+    phase_data = wf._data.get("phases", {})
+    phases_out = []
+    for p in PHASES:
+        pd = phase_data.get(p, {})
+        ph_status = pd.get("status", Status.PENDING.value)
+        stories_state = pd.get("stories", {})
+        stories = []
+        for sid, s in sorted(stories_state.items()):
+            story = {
+                "id": sid,
+                "name": s.get("name"),
+                "status": s.get("status", "pending"),
+                "github_issue": s.get("github_issue"),
+                "github_pr": s.get("github_pr"),
+                "pr_url": pr_links.get(sid),
+                "commit_urls": commit_links.get(sid, []),
+                "current_task": s.get("current_task"),
+                "tasks": [
+                    _task_out(tid, tst, repo)
+                    for tid, tst in s.get("tasks", {}).items()
+                ],
+            }
+            stories.append(story)
+        entry: dict[str, Any] = {
+            "name": p,
+            "status": ph_status,
+            "pr_url": pr_links.get(p),
+            "artifact_url": artifact_links.get(p),
+            "commit_urls": commit_links.get(p, []),
+            "stories": stories,
+        }
+        phases_out.append(entry)
+
+    proc = wf._process
+    held = proc.get("held", False)
+    pid = proc.get("pid")
+    last_tick = proc.get("last_tick")
+    is_running = False
+    if pid:
+        try:
+            os.kill(pid, 0)
+            is_running = True
+        except (OSError, ProcessLookupError):
+            pass
+    if held:
+        proc_status = "held"
+    elif wf.is_done():
+        proc_status = "done"
+    elif is_running:
+        if last_tick and (time.time() - last_tick) > 900:
+            proc_status = "stale"
+        elif at_gate:
+            proc_status = "waiting"
+        else:
+            proc_status = "running"
+    else:
+        proc_status = "stopped"
+
+    impl_phase = next((ph for ph in phases_out if ph["name"] == Phase.IMPLEMENTATION.value), {})
     return {
         "name": name,
         "display_name": spec.get("project_name", name),
-        "state": state,
-        "phase_index": phase_idx,
+        "phase": wf.phase.value,
+        "status": wf.status.value,
+        "label": wf.label(),
         "phase_total": len(PHASES),
-        "phases": phase_status,
-        "stories": stories,
+        "phases": phases_out,
+        "stories": impl_phase.get("stories", []),
         "at_gate": at_gate,
         "bypassed_phases": bypassed,
         "current_story": wf.current_story,
+        "story_status": wf.story_status.value if wf.story_status else None,
+        "current_task": wf.current_task,
         "completed_stories": wf.completed_stories,
         "last_updated": wf._data.get("last_updated", "")[:19],
         "repo": repo,
         "branch": branch,
+        "base_branch": base_branch,
+        "state_url": _state_link(name),
         "pr_links": pr_links,
+        "commit_links": commit_links,
+        "artifact_links": artifact_links,
+        "held": held,
+        "process_status": {"status": proc_status, "pid": pid, "last_tick": last_tick, "is_running": is_running},
     }
 
 
 @app.get("/api/projects")
 def get_projects():
-    from sdlc_orchestrator.commands.ops import _find_all_project_dirs
-    # Collect all known projects from ~/.sdlc/projects symlinks + local .sdlc/active
-    entries = _find_all_project_dirs(scan_dir=_project_dir.parent)
-    seen_dirs = {pd for pd, _ in entries}
-
-    # Also include projects from local active file if not already found
-    active_file = _project_dir / ".sdlc" / "active"
-    if active_file.exists():
-        for name in [n.strip() for n in active_file.read_text().splitlines() if n.strip()]:
-            worktree = _project_dir / "worktree" / name
-            wf_dir = worktree if worktree.exists() else _project_dir
-            if wf_dir not in seen_dirs:
-                entries.append((wf_dir, name))
-                seen_dirs.add(wf_dir)
+    # Collect active project entries from all known repo roots (global)
+    entries = list(_known_project_entries())
+    seen_dirs = {pd.resolve() for pd, _ in entries}
 
     active = []
     closed = []
-    seen_names: set[str] = set()
+    seen_keys: set[Path] = set()
+
     for project_dir, name in entries:
-        if not name or name == "default":
-            # Try to get name from spec.yaml
-            try:
-                spec = MemoryManager(project_dir).spec()
-                pname = spec.get("project_name", "")
-                name = pname.lower().replace(" ", "-") if pname else ""
-            except Exception:
-                pass
-        if not name or name in seen_names:
+        key = project_dir.resolve()
+        if key in seen_keys:
             continue
-        seen_names.add(name)
+        seen_keys.add(key)
+        if not name:
+            continue
         data = _project_data(project_dir, name)
         if data.get("error"):
             continue
-        if data.get("closed"):
+        if data.get("phase") == Phase.DONE.value or data.get("closed"):
             closed.append(data)
         else:
             active.append(data)
 
+    # Add archived projects from .projects/ (always closed/done)
+    for project_dir, name in _known_archive_entries():
+        key = project_dir.resolve()
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        data = _project_data(project_dir, name)
+        if data.get("error"):
+            continue
+        data["archived"] = True
+        closed.append(data)
+
     return {"active": active, "closed": closed}
+
+
+@app.get("/api/projects/{name}/state", response_class=PlainTextResponse)
+def get_state_json(name: str):
+    wf_dir = _resolve_project_dir(name)
+    wf = WorkflowState(wf_dir)
+    return PlainTextResponse(wf.path.read_text(), media_type="application/json")
+
+
+@app.get("/api/projects/{name}/artifact/{key}")
+def get_artifact(name: str, key: str):
+    wf_dir = _resolve_project_dir(name)
+    wf = WorkflowState(wf_dir)
+    raw_path = wf.artifacts.get(key)
+    if not raw_path:
+        raise HTTPException(404, f"No artifact recorded for '{key}'")
+    if isinstance(raw_path, str) and raw_path.startswith(("http://", "https://")):
+        return RedirectResponse(raw_path)
+    artifact = _artifact_path(wf_dir, raw_path)
+    if not artifact:
+        raise HTTPException(404, f"Artifact not found: {raw_path}")
+    safe_path = _safe_state_file(wf_dir, artifact)
+    return PlainTextResponse(
+        safe_path.read_text(errors="replace"),
+        media_type="text/markdown; charset=utf-8",
+    )
 
 
 @app.post("/api/projects/{name}/approve")
 def approve(name: str):
-    worktree = _project_dir / "worktree" / name
-    wf_dir = worktree if worktree.exists() else _project_dir
+    wf_dir = _resolve_project_dir(name)
     result = subprocess.run(["sdlc", "state", "approve"], cwd=wf_dir, capture_output=True, text=True)
     if result.returncode != 0:
         raise HTTPException(400, result.stderr or result.stdout)
@@ -388,18 +698,30 @@ def approve(name: str):
 
 @app.post("/api/projects/{name}/no-approvals")
 def no_approvals(name: str):
-    worktree = _project_dir / "worktree" / name
-    wf_dir = worktree if worktree.exists() else _project_dir
+    wf_dir = _resolve_project_dir(name)
     result = subprocess.run(["sdlc", "state", "no-approvals"], cwd=wf_dir, capture_output=True, text=True)
     if result.returncode != 0:
         raise HTTPException(400, result.stderr or result.stdout)
     return {"ok": True}
 
 
+@app.post("/api/projects/{name}/hold")
+def hold_project(name: str):
+    wf_dir = _resolve_project_dir(name)
+    WorkflowState(wf_dir).set_process(held=True)
+    return {"ok": True}
+
+
+@app.post("/api/projects/{name}/resume")
+def resume_project(name: str):
+    wf_dir = _resolve_project_dir(name)
+    WorkflowState(wf_dir).set_process(held=False)
+    return {"ok": True}
+
+
 @app.post("/api/projects/{name}/approvals")
 def restore_approvals(name: str):
-    worktree = _project_dir / "worktree" / name
-    wf_dir = worktree if worktree.exists() else _project_dir
+    wf_dir = _resolve_project_dir(name)
     result = subprocess.run(["sdlc", "state", "approvals"], cwd=wf_dir, capture_output=True, text=True)
     if result.returncode != 0:
         raise HTTPException(400, result.stderr or result.stdout)
@@ -410,10 +732,12 @@ def restore_approvals(name: str):
 def get_prs(name: str):
     """Return open/merged PRs for all SDLC branches of this project."""
     try:
+        roots = _global_repo_roots()
+        gh_cwd = roots[0] if roots else _project_dir
         result = subprocess.run(
             ["gh", "pr", "list", "--search", f"sdlc-{name}", "--state", "all",
              "--json", "number,title,url,state,headRefName,mergedAt,createdAt"],
-            capture_output=True, text=True, cwd=_project_dir
+            capture_output=True, text=True, cwd=gh_cwd
         )
         if result.returncode != 0:
             return {"prs": []}
@@ -426,13 +750,95 @@ def get_prs(name: str):
 
 @app.get("/api/projects/{name}/history")
 def get_history(name: str):
-    worktree = _project_dir / "worktree" / name
-    wf_dir = worktree if worktree.exists() else _project_dir
+    wf_dir = _resolve_project_dir(name)
     try:
         wf = WorkflowState(wf_dir)
         return {"history": wf._data.get("history", [])}
     except Exception:
         return {"history": []}
+
+
+@app.get("/api/projects/{name}/status")
+def get_process_status(name: str):
+    """Detect if loop process is running, stopped, or waiting for approval."""
+    import os
+    import time
+    wf_dir = _resolve_project_dir(name)
+    try:
+        wf = WorkflowState(wf_dir)
+        proc = wf._process
+        pid = proc.get("pid")
+        last_tick = proc.get("last_tick")
+        held = proc.get("held", False)
+        at_gate = wf.is_approval_gate()
+
+        is_running = False
+        if pid:
+            try:
+                os.kill(pid, 0)
+                is_running = True
+            except (OSError, ProcessLookupError):
+                pass
+
+        if held:
+            status = "held"
+        elif wf.is_done():
+            status = "done"
+        elif is_running:
+            if last_tick and (time.time() - last_tick) > 600:
+                status = "stale"
+            elif at_gate:
+                status = "waiting"
+            else:
+                status = "running"
+        else:
+            status = "stopped"
+
+        return {
+            "status": status,
+            "pid": pid,
+            "last_tick": last_tick,
+            "is_running": is_running,
+            "at_gate": at_gate,
+            "held": held,
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@app.post("/api/projects/{name}/start-loop")
+def start_loop(name: str):
+    """Start the orchestration loop in background."""
+    import subprocess
+    from sdlc_orchestrator.memory import MemoryManager, EXECUTOR_CLI
+
+    wf_dir = _resolve_project_dir(name)
+
+    spec = MemoryManager(wf_dir).spec()
+    executor = spec.get("executor", "kiro")
+    cmd_template = EXECUTOR_CLI.get(executor, EXECUTOR_CLI["kiro"])
+    if not cmd_template:
+        raise HTTPException(400, f"Executor '{executor}' has no headless CLI")
+
+    skill = "sdlc-orchestrate"
+    loop_cmd = " ".join(
+        part.replace("{skill}", skill) for part in cmd_template
+    )
+    bash_cmd = f"while true; do {loop_cmd}; sleep 600; done"
+
+    try:
+        import time as _time
+        proc = subprocess.Popen(
+            ["bash", "-c", bash_cmd],
+            cwd=str(wf_dir),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        WorkflowState(wf_dir).set_process(pid=proc.pid, last_tick=_time.time())
+        return {"ok": True, "pid": proc.pid, "cwd": str(wf_dir), "executor": executor}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to start loop: {e}")
 
 
 @app.get("/", response_class=HTMLResponse)

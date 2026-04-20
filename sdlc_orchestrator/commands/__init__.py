@@ -6,7 +6,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from sdlc_orchestrator.state_machine import State, WorkflowState
+from sdlc_orchestrator.state_machine import Phase, WorkflowState
 from sdlc_orchestrator.memory import MemoryManager
 from sdlc_orchestrator.utils import find_project_dir
 
@@ -27,7 +27,7 @@ def make_workflow_state(project_dir: Path) -> WorkflowState:
 
     spec = MemoryManager(project_dir).spec()
 
-    def _notify(new_state: State, artifact_path: str) -> None:
-        notify_from_spec(spec, new_state.value, "awaiting_approval", extra=artifact_path)
+    def _notify(new_phase: Phase, artifact_path: str) -> None:
+        notify_from_spec(spec, new_phase.value, "awaiting_approval", extra=artifact_path)
 
     return WorkflowState(project_dir, notifier=_notify)

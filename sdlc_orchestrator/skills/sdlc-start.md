@@ -8,72 +8,80 @@ Accepts an optional `--no-approvals` flag:
 
 ---
 
-## Step 1 — Determine project name
+## Step 1 — Pick or name the project
 
-**Always ask the user** — never silently pick a default or reuse `.sdlc/active`.
-
-List any existing projects first:
+**First**, extract and present ideas from the ideas folder:
 
 ```bash
-ls .sdlc/projects/ 2>/dev/null
+python3 - <<'EOF'
+import os, zipfile, re, json
+folder = os.path.expanduser("~/Documents/Claude/Projects/Ideas for contentautomation platform")
+ideas = []
+for fname in sorted(f for f in os.listdir(folder) if f.endswith(".docx")):
+    path = os.path.join(folder, fname)
+    try:
+        with zipfile.ZipFile(path) as z:
+            xml = z.read("word/document.xml").decode("utf-8")
+        text = re.sub(r"<[^>]+>", " ", xml)
+        text = re.sub(r"\s+", " ", text).strip()
+        ideas.append({"file": fname, "text": text[:4000]})
+    except Exception as e:
+        ideas.append({"file": fname, "text": f"(could not parse: {e})"})
+print(json.dumps(ideas, indent=2))
+EOF
 ```
 
-Then ask:
+Read the extracted content, then list existing projects alongside the ideas and ask **one question** via `AskUserQuestion`:
 
 ```
-Existing projects: <list, or "none">
+Here are your saved ideas:
 
-What is the project name?
-(Enter a name from the list to continue an existing project, or a new name to start one.)
+1. <title> — <one-sentence summary>
+2. <title> — <one-sentence summary>
+3. <title> — <one-sentence summary>
+4. <title> — <one-sentence summary>
+5. <title> — <one-sentence summary>
+
+Existing projects you can continue:
+  • cap-agent-2.0
+  • multi-tenant-saas-platform-workflow-marketplace
+  • real-time-collaborative-content-studio
+
+Enter:
+  • A number (or numbers like "1 3") to start from an idea
+  • An existing project name to continue it
+  • A new name to start from scratch
 ```
 
-Wait for the user's answer before proceeding. Do not infer or default.
+**Handle the response:**
 
-Set the chosen name as active (slugified — lowercase, hyphens only):
+- **Number(s)** — derive the project name by slugifying the idea title. Pre-load `description`, `users`, `goals`, `non_goals`, `tech_stack` from the selected PRD(s) so the interview in Step 4 skips fields already covered. If multiple numbers, merge the ideas and confirm the combined scope before continuing.
+- **Existing project name** — set it as active and skip to Step 2 (worktree already exists).
+- **New name** — proceed normally with a blank spec.
+
+Keep the chosen slug in `$PROJECT` for the remaining steps. Do not create or update `.sdlc/` in the main repo.
 ```bash
 PROJECT=$(echo "<chosen-name>" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//')
-sdlc project activate "$PROJECT"
 echo "Active project: $PROJECT"
 ```
 
 ---
 
-## Step 2 — Scaffold project directory if new
-
-Use `$PROJECT` from Step 1 (do not re-read `.sdlc/active`).
-
-```bash
-if [ ! -d ".sdlc/projects/$PROJECT" ]; then
-  mkdir -p .sdlc/projects/$PROJECT/memory
-  mkdir -p .sdlc/projects/$PROJECT/workflow/artifacts
-  mkdir -p .sdlc/projects/$PROJECT/workflow/logs
-  mkdir -p .sdlc/projects/$PROJECT/feedback
-  echo "Created project: $PROJECT"
-fi
-```
-
----
-
-## Step 3 — Ensure git repo and create worktree
-
-Use `$PROJECT` from Step 1.
+## Step 2 — Ensure git repo and create worktree
 
 ```bash
 git rev-parse --git-dir 2>/dev/null || (git init && git add -A && git commit -m "init" --allow-empty)
 
+# Reuse the PROJECT slug chosen in Step 1.
+PROJECT="<project-slug>"
 REPO_ROOT=$(git rev-parse --show-toplevel)
-
-# Guard: must run from repo root, not from inside a worktree
-if git rev-parse --git-dir 2>/dev/null | grep -q "\.git/worktrees"; then
-  echo "ERROR: you are inside a worktree. Run /sdlc-start from the repo root: $REPO_ROOT"
-  exit 1
-fi
-
 WORKTREE_PATH="$REPO_ROOT/worktree/$PROJECT"
 
-# Create a dedicated branch for this worktree, branching from main
-git checkout main 2>/dev/null || true
-git checkout -b worktree/$PROJECT 2>/dev/null || git checkout worktree/$PROJECT
+# Create a dedicated branch for this worktree without checking it out in the
+# main repo.
+BASE_REF=main
+git rev-parse --verify "$BASE_REF" >/dev/null 2>&1 || BASE_REF=HEAD
+git rev-parse --verify "worktree/$PROJECT" >/dev/null 2>&1 || git branch "worktree/$PROJECT" "$BASE_REF"
 git push -u origin worktree/$PROJECT 2>/dev/null || true
 
 # Add the worktree
@@ -83,37 +91,39 @@ echo "Worktree: $WORKTREE_PATH"
 echo "Base branch: worktree/$PROJECT"
 ```
 
-Scaffold `.sdlc/` inside the worktree and record `base_branch`:
+Immediately scaffold `.sdlc/` inside the worktree. This is the only persistent SDLC state for the project. Do **not** create `.sdlc/projects/`.
 ```bash
-mkdir -p "$WORKTREE_PATH/.sdlc/projects/$PROJECT/memory"
-mkdir -p "$WORKTREE_PATH/.sdlc/projects/$PROJECT/workflow/artifacts"
-mkdir -p "$WORKTREE_PATH/.sdlc/projects/$PROJECT/workflow/logs"
-mkdir -p "$WORKTREE_PATH/.sdlc/projects/$PROJECT/feedback"
-grep -qxF "$PROJECT" "$WORKTREE_PATH/.sdlc/active" 2>/dev/null || echo "$PROJECT" >> "$WORKTREE_PATH/.sdlc/active"
+mkdir -p "$WORKTREE_PATH/.sdlc/memory"
+mkdir -p "$WORKTREE_PATH/.sdlc/workflow/artifacts"
+mkdir -p "$WORKTREE_PATH/.sdlc/workflow/logs"
+mkdir -p "$WORKTREE_PATH/.sdlc/feedback"
 
-# Copy spec if it exists
-cp ".sdlc/projects/$PROJECT/spec.yaml" "$WORKTREE_PATH/.sdlc/projects/$PROJECT/spec.yaml" 2>/dev/null || true
-
-# Write state.json with base_branch
+# Write complete workflow state with base_branch
 python3 -c "
-import json
-f = '$WORKTREE_PATH/.sdlc/projects/$PROJECT/workflow/state.json'
-try:
-    d = json.load(open(f))
-except Exception:
-    d = {}
-d['base_branch'] = 'worktree/$PROJECT'
-d['current_branch'] = 'worktree/$PROJECT'
-json.dump(d, open(f, 'w'), indent=2)
+from pathlib import Path
+from sdlc_orchestrator.state_machine import WorkflowState
+wf = WorkflowState(Path('$WORKTREE_PATH'))
+wf._data['base_branch'] = 'worktree/$PROJECT'
+wf._data['current_branch'] = 'worktree/$PROJECT'
+wf.save()
 print('base_branch = worktree/$PROJECT')
 "
+
+(cd "$WORKTREE_PATH" && sdlc relink 2>/dev/null || true)
 ```
 
 ---
 
-## Step 4 — Interview the developer
+## Step 3 — Interview the developer (if spec is missing or incomplete)
 
-Always ask — do not skip even if a spec already exists.
+Read the worktree spec:
+```bash
+PROJECT="<project-slug>"
+WORKTREE_PATH="$(git rev-parse --show-toplevel)/worktree/$PROJECT"
+cat "$WORKTREE_PATH/.sdlc/spec.yaml" 2>/dev/null
+```
+
+If `description` is already filled in, use it as the default and do not re-ask that field.
 
 Auto-detect what you can before asking:
 ```bash
@@ -146,16 +156,21 @@ Set these automatically without asking:
 - `repo` — parse from `git remote get-url origin`
 - `executor` — `kiro`
 
-Write spec to both `.sdlc/projects/$PROJECT/spec.yaml` and `$WORKTREE_PATH/.sdlc/projects/$PROJECT/spec.yaml`, then:
+Write spec to `$WORKTREE_PATH/.sdlc/spec.yaml`, then run GitHub setup from the worktree:
 ```bash
+cd "$WORKTREE_PATH"
 sdlc github setup 2>/dev/null || true
 ```
 
 ---
 
-## Step 5 — Done
+## Step 4 — Run full setup interview
 
-**Stop here.** Do not run any phases. The orchestration loop does that.
+Invoke the `sdlc-setup` skill now from `worktree/$PROJECT` to conduct the full interview (goals, non-goals, users, constraints) and draft requirements. All reads and writes must target the worktree `.sdlc/` directory.
+
+---
+
+## Step 5 — Done
 
 Tell the developer:
 
@@ -177,7 +192,7 @@ Branch structure:
 
 Working directory: worktree/<name>/
 
-Run the orchestration loop from the worktree to start:
+Run the orchestration loop from the worktree:
 
   cd worktree/<name>
   while kiro-cli chat --agent sdlc-orchestrate --no-interactive --trust-all-tools start; do sleep 600; done

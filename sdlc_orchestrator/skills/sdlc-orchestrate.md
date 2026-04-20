@@ -62,26 +62,15 @@ echo "Active project: $PROJECT"
 All phase branches are namespaced: `sdlc-$PROJECT-requirements`, `sdlc-$PROJECT-design`, etc.
 The working branch is `sdlc-$PROJECT`.
 
-> **Why `basename $(pwd)`?** The sdlc CLI derives branch slugs from the repo directory name (via `project_slug()`). Using `.sdlc/active` returns the internal project key (e.g. "default") which does not match branch names. Always use the directory-based slug.
+> **Why `basename $(pwd)`?** The sdlc CLI derives branch slugs from the repo directory name (via `project_slug()`). Always use the directory-based slug.
 
 ---
 
-## Step 0b — Ensure GitHub is set up (ONCE per project)
-
-```bash
-sdlc github setup
-```
-
-This is idempotent — skips anything already created (board, labels, pre-plan story issues).
-If `gh` is not authenticated or no repo is configured, it will warn and continue.
-
----
-
-## Step 0c — Resume, don't restart
+## Step 0b — Resume, don't restart
 
 Before doing any work, check what's already been done:
 
-1. Read the artifact for the current state (e.g. `docs/sdlc-$PROJECT-plan.md` for
+1. Read the artifact for the current state (e.g. `docs/sdlc/$PROJECT/plan.md` for
    `implementation_in_progress`). If it's already complete, advance state
    and return — don't re-do work.
 2. If an artifact is partial (e.g. `plan.md` has some `[x] done` tasks),
@@ -102,21 +91,16 @@ These `sdlc` commands are your state and integration layer — call them via Bas
 |---------|---------|
 | `sdlc state get` | Read current state (always start here) |
 | `sdlc state set <state>` | Advance to next state after completing a phase |
+| `sdlc artifact set <key> <path>` | Record an artifact file path in state.json |
 | `sdlc artifact read <name>` | Read a phase artifact |
 | `sdlc github pr-status <branch>` | Check if a phase PR is approved/merged |
 | `sdlc github ingest-feedback <branch> <phase>` | Pull PR review comments as feedback |
 | `sdlc github create-pr <branch> <phase>` | Open PR for a phase branch |
-| `sdlc github setup` | Idempotent full GitHub setup: labels, board, workflows, pre-plan story issues |
-| `sdlc github sync-board` | Move active story issue to correct board column; closes all on done |
-| `sdlc github close-merged` | Close story + task issues whose PR is merged; move board items to Done |
 | `sdlc story start <STORY-NNN>` | Set active story, transition to story_in_progress |
 | `sdlc story complete` | Mark story done; prints next story or all_complete |
-| `sdlc github create-story-issues` | Create one GitHub issue per STORY-NNN in plan.md |
-| `sdlc github create-task-issues` | Create one GitHub issue per TASK-NNN in plan.md |
 | `sdlc tick release` | Release tick lock (LAST THING, EVERY TIME) |
 | `sdlc project list` | List all projects and show which is active |
-| `sdlc project switch <name>` | Switch active project |
-| `sdlc project close [--next <name>]` | Close GitHub issues, move board → Done, archive state, reset for next cycle |
+| `sdlc project close` | Archive state for a completed project |
 
 Read and write all project files directly with your native tools. Use `sdlc`
 only for state transitions and integrations.
@@ -131,70 +115,78 @@ reviewable via PR, and persistent outside the local machine.
 
 | Phase | Branch | Artifact file |
 |-------|--------|---------------|
-| requirement | `sdlc-$PROJECT-requirements` | `docs/sdlc-$PROJECT-requirements.md` |
-| design | `sdlc-$PROJECT-design` | `docs/sdlc-$PROJECT-design.md` |
-| planning | `sdlc-$PROJECT-plan` | `docs/sdlc-$PROJECT-plan.md` |
+| requirement | `sdlc-$PROJECT-requirements` | `docs/sdlc/$PROJECT/requirements.md` |
+| design | `sdlc-$PROJECT-design` | `docs/sdlc/$PROJECT/design.md` |
+| planning | `sdlc-$PROJECT-plan` | `docs/sdlc/$PROJECT/plan.md` |
 | implementation | `sdlc/implementation` | (code) |
 
 ---
 
 ## Operating loop
 
+`sdlc state get` now outputs `phase:` and `status:` lines. Read them:
+
+```bash
+STATE=$(sdlc state get)
+PHASE=$(echo "$STATE" | grep "^phase:" | cut -d' ' -f2)
+STATUS=$(echo "$STATE" | grep "^status:" | cut -d' ' -f2)
+BASE_BRANCH=$(echo "$STATE" | grep "^base_branch:" | cut -d' ' -f2)
+STORY=$(echo "$STATE" | grep "^current_story:" | cut -d' ' -f2)
+STORY_STATUS=$(echo "$STATE" | grep "^story_status:" | cut -d' ' -f2)
+PENDING=$(echo "$STATE" | grep "^pending_stories:" | cut -d' ' -f2-)
+BYPASS=$(echo "$STATE" | grep "^bypass_approvals:" | cut -d' ' -f2-)
+```
+
 ```
 0. sdlc tick acquire              — prevent concurrent runs (exit if locked)
-0b. sdlc github setup            — idempotent: labels, board, pre-plan story issues
-1. sdlc state get                 — where am I? (read current_story, pending_stories, bypass_approvals, base_branch)
-                                    capture BASE_BRANCH from the base_branch line (default: project/$PROJECT)
-2. state == done?                 — sdlc tick release, stop, congratulate
-3. state is approval gate?
+1. sdlc state get                 — parse phase, status, story, bypass_approvals, base_branch
+2. phase == done?                 — check if $BASE_BRANCH is merged into main (see "done" section below)
+                                    merged → run /sdlc-cleanup-worktree, tick release, stop
+                                    not merged → remind human, tick release, stop
+3. status == awaiting_approval?
      CHECK BYPASS FIRST:
-       If the current phase appears in bypass_approvals (from step 1 output),
-       skip PR polling and immediately advance:
-            → sdlc state set <next-state>
-            → sdlc github sync-board
+       If PHASE is in bypass_approvals, skip PR polling and immediately advance:
+            → sdlc state approve
             → sdlc tick release
-            → stop  ← always stop so the next tick starts fresh with reset context
+            → stop  ← always stop so the next tick starts fresh
 
-     PRE-PLAN PHASES (requirement / design / plan) — only if NOT bypassed:
-       a. sdlc github pr-status sdlc-$PROJECT-<phase>
-       b. sdlc github ingest-feedback sdlc-$PROJECT-<phase> <phase>
+     PRE-PLAN PHASES (requirement / design / planning) — only if NOT bypassed:
+       a. sdlc github pr-status sdlc-$PROJECT-<phase-suffix>
+       b. sdlc github ingest-feedback sdlc-$PROJECT-<phase-suffix> <phase>
        c. approved/merged?
-            → sdlc state set <next-state>
-            → sdlc github sync-board
+            → sdlc state approve
             → continue to step 4
        d. open? → check feedback, address or remind, sdlc tick release, stop
 
-     STORY GATE (story_awaiting_review) — only if implementation NOT bypassed:
-       a. sdlc github pr-status sdlc-$PROJECT-<current_story>   (e.g. sdlc-$PROJECT-story-001)
-       b. sdlc github ingest-feedback sdlc-$PROJECT-<current_story> <current_story>
+     STORY GATE (phase=implementation, status=awaiting_approval) — only if NOT bypassed:
+       a. sdlc github pr-status sdlc-$PROJECT-$STORY   (e.g. sdlc-$PROJECT-story-001)
+       b. sdlc github ingest-feedback sdlc-$PROJECT-$STORY $STORY
        c. approved/merged?
             → sdlc story complete       — prints "next: STORY-NNN" or "all_complete"
-            → sdlc github sync-board
             → if next story: sdlc story start <next>   → continue to step 4
-            → if all_complete: sdlc state set done → sdlc github sync-board → stop
+            → if all_complete: sdlc state approve → stop
        d. open? → check feedback, address or remind, sdlc tick release, stop
 
 4. resume check                   — read existing artifact or story progress
 5. execute current phase/story    — see phase instructions below
 6. commit on phase/story branch
 7. push + open PR
-8. sdlc state set <approval-gate>
-9. sdlc github sync-board
-10. sdlc tick release
+8. sdlc state set awaiting_approval
+9. sdlc tick release
 11. stop
 ```
 
 Never skip a step. Never advance state before work is complete and committed.
 
-**Bypass mapping** — phase name in `bypass_approvals` → approval gate state it skips:
+**Phase branch suffixes** (used in PR branch names):
 
-| bypass_approvals phase | gate state skipped |
+| phase | branch suffix |
 |---|---|
-| `requirement` | `requirement_ready_for_approval` |
-| `design` | `awaiting_design_approval` |
-| `planning` | `task_plan_ready` |
-| `implementation` | `story_awaiting_review` |
-| `documentation` | `documentation_awaiting_approval` |
+| `requirement` | `requirements` |
+| `design` | `design` |
+| `planning` | `plan` |
+| `implementation` | `$STORY` (e.g. `story-001`) |
+| `documentation` | `docs` |
 
 ---
 
@@ -205,15 +197,15 @@ All pre-plan phases follow the same pattern: `phase_in_progress` → PR →
 
 ```
 requirement_in_progress
-  → [you: write docs/sdlc-$PROJECT-requirements.md, open PR]
+  → [you: write docs/sdlc/$PROJECT/requirements.md, open PR]
 requirement_ready_for_approval       ← poll sdlc-$PROJECT-requirements PR
   → [you: system design]
 design_in_progress
-  → [you: produces docs/sdlc-$PROJECT-design.md]
+  → [you: produces docs/sdlc/$PROJECT/design.md]
 awaiting_design_approval             ← poll sdlc-$PROJECT-design PR
   → [you: task breakdown into STORY-NNN / TASK-NNN]
 task_plan_in_progress
-  → [you: produces docs/sdlc-$PROJECT-plan.md]
+  → [you: produces docs/sdlc/$PROJECT/plan.md]
 task_plan_ready                      ← poll sdlc-$PROJECT-plan PR
   → [you: implement stories one by one]
 
@@ -247,9 +239,9 @@ Each pre-plan phase follows the same pattern:
 
 ### state: requirement_in_progress
 
-You are a Business Analyst. Read the active project's spec:
+You are a Business Analyst. Read the project spec:
 ```bash
-cat .sdlc/projects/$(cat .sdlc/active 2>/dev/null || echo default)/spec.yaml
+cat .sdlc/spec.yaml
 ```
 Also read the agent context file
 (`CLAUDE.md`, `AGENT.md`, or `AGENTS.md` — whichever exists in the project root).
@@ -259,8 +251,8 @@ Also read the agent context file
    git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
    git checkout -b sdlc-$PROJECT-requirements 2>/dev/null || git checkout sdlc-$PROJECT-requirements
    ```
-2. Create `docs/sdlc/` directory if needed
-3. Write `docs/sdlc-$PROJECT-requirements.md` covering:
+2. Create `docs/sdlc/$PROJECT/` directory if needed
+3. Write `docs/sdlc/$PROJECT/requirements.md` covering:
    - Goals and non-goals (from spec.yaml)
    - Functional requirements (numbered, with acceptance criteria)
    - Non-functional requirements (performance, security, scalability)
@@ -268,9 +260,10 @@ Also read the agent context file
    - Success metrics / definition of done
    - If spec is sparse, include a section "**Open questions for review**" listing
      anything ambiguous — the human can answer in PR comments
-4. Commit and push:
+4. Record artifact path and commit:
    ```bash
-   git add docs/sdlc-$PROJECT-requirements.md
+   sdlc artifact set requirements docs/sdlc/$PROJECT/requirements.md
+   git add docs/sdlc/$PROJECT/requirements.md
    git commit -m "sdlc(requirement): draft requirements"
    git push -u origin sdlc-$PROJECT-requirements
    ```
@@ -281,7 +274,7 @@ Also read the agent context file
 6. Run:
    ```bash
    sdlc state set requirement_ready_for_approval
-   sdlc github sync-board
+
    ```
 7. Tell the human:
    ```
@@ -303,38 +296,38 @@ sdlc github ingest-feedback sdlc-$PROJECT-requirements requirement
 ```
 
 - **approved or merged** → apply any feedback from `.sdlc/feedback/requirement.md`
-  to `docs/sdlc-$PROJECT-requirements.md`, commit and push, then **merge the PR and update base**:
+  to `docs/sdlc/$PROJECT/requirements.md`, commit and push, then **merge the PR and update base**:
   ```bash
   gh pr merge sdlc-$PROJECT-requirements --merge --body ""
   git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
   sdlc state set design_in_progress
-  sdlc github sync-board
   ```
 
 - **open** → check `.sdlc/feedback/requirement.md` for new comments.
-  If new comments exist: update `docs/sdlc-$PROJECT-requirements.md`, commit and push, stop.
+  If new comments exist: update `docs/sdlc/$PROJECT/requirements.md`, commit and push, stop.
   If no new comments: remind the human to review the PR and stop.
 
 ---
 
 ### state: design_in_progress
 
-You are a Software Architect. Read `docs/sdlc-$PROJECT-requirements.md`.
+You are a Software Architect. Read `docs/sdlc/$PROJECT/requirements.md`.
 
 1. Checkout branch (pull base first to include merged requirements):
    ```bash
    git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
    git checkout -b sdlc-$PROJECT-design 2>/dev/null || git checkout sdlc-$PROJECT-design
    ```
-2. Write `docs/sdlc-$PROJECT-design.md` covering:
+2. Write `docs/sdlc/$PROJECT/design.md` covering:
    - Architecture overview (ASCII component diagram)
    - Component responsibilities and interfaces
    - Data model and API contracts
    - Technology choices with rationale
    - Security, scalability, risks
-3. Commit and push:
+3. Record artifact path and commit:
    ```
-   git add docs/sdlc-$PROJECT-design.md
+   sdlc artifact set design docs/sdlc/$PROJECT/design.md
+   git add docs/sdlc/$PROJECT/design.md
    git commit -m "sdlc(design): system architecture"
    git push -u origin sdlc-$PROJECT-design
    ```
@@ -355,16 +348,15 @@ sdlc github ingest-feedback sdlc-$PROJECT-design design
 ```
 
 - **approved or merged** → apply any feedback from `.sdlc/feedback/design.md`
-  to `docs/sdlc-$PROJECT-design.md`, commit and push, then **merge the PR and update base**:
+  to `docs/sdlc/$PROJECT/design.md`, commit and push, then **merge the PR and update base**:
   ```bash
   gh pr merge sdlc-$PROJECT-design --merge --body ""
   git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
   sdlc state set task_plan_in_progress
-  sdlc github sync-board
   ```
 
 - **open** → check `.sdlc/feedback/design.md` for new comments.
-  If new comments exist: address them by updating `docs/sdlc-$PROJECT-design.md`,
+  If new comments exist: address them by updating `docs/sdlc/$PROJECT/design.md`,
   commit and push to `sdlc-$PROJECT-design`, then stop.
   If no new comments: remind the human to review the PR and stop.
 
@@ -372,14 +364,14 @@ sdlc github ingest-feedback sdlc-$PROJECT-design design
 
 ### state: task_plan_in_progress
 
-You are a Project Manager. Read `docs/sdlc-$PROJECT-design.md` and `docs/sdlc-$PROJECT-requirements.md`.
+You are a Project Manager. Read `docs/sdlc/$PROJECT/design.md` and `docs/sdlc/$PROJECT/requirements.md`.
 
 1. Checkout branch (pull base first to include merged design):
    ```bash
    git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
    git checkout -b sdlc-$PROJECT-plan 2>/dev/null || git checkout sdlc-$PROJECT-plan
    ```
-2. Write `docs/sdlc-$PROJECT-plan.md` — stories grouping tasks:
+2. Write `docs/sdlc/$PROJECT/plan.md` — stories grouping tasks:
 
    **Rule: every phase must have at least one STORY-NNN, and every story gets its own PR.**
    Structure stories by phase:
@@ -399,9 +391,10 @@ You are a Project Manager. Read `docs/sdlc-$PROJECT-design.md` and `docs/sdlc-$P
    - Tests: what will verify this
    - Status: [ ] pending
    ```
-3. Commit and push:
+3. Record artifact path and commit:
    ```
-   git add docs/sdlc-$PROJECT-plan.md
+   sdlc artifact set plan docs/sdlc/$PROJECT/plan.md
+   git add docs/sdlc/$PROJECT/plan.md
    git commit -m "sdlc(plan): task breakdown"
    git push -u origin sdlc-$PROJECT-plan
    ```
@@ -421,23 +414,19 @@ sdlc github ingest-feedback sdlc-$PROJECT-plan planning
 ```
 
 - **approved or merged** → apply any feedback from `.sdlc/feedback/planning.md`
-  to `docs/sdlc-$PROJECT-plan.md`, commit, then **merge the PR and update base**:
+  to `docs/sdlc/$PROJECT/plan.md`, commit, then **merge the PR and update base**:
   ```bash
   gh pr merge sdlc-$PROJECT-plan --merge --body ""
   git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
-  sdlc github create-task-issues        # one issue per TASK-NNN → board
-  sdlc github create-story-issues       # one issue per STORY-NNN → board; tasks auto-linked as sub-issues
-  sdlc github sync-board
   ```
   Then pick the first pending story and start it:
   ```bash
   sdlc state get                         # read pending_stories
   sdlc story start STORY-001             # sets current_story, → story_in_progress
-  sdlc github sync-board
   ```
 
 - **open** → check `.sdlc/feedback/planning.md` for new comments.
-  If new comments exist: update `docs/sdlc-$PROJECT-plan.md`, commit and push to `sdlc-$PROJECT-plan`, stop.
+  If new comments exist: update `docs/sdlc/$PROJECT/plan.md`, commit and push to `sdlc-$PROJECT-plan`, stop.
   If no new comments: remind the human to review the PR and stop.
 
 ---
@@ -447,16 +436,14 @@ sdlc github ingest-feedback sdlc-$PROJECT-plan planning
 You are a Senior Developer. One story at a time — read `current_story` from
 `sdlc state get`.
 
-1. Read the story's tasks from `docs/sdlc-$PROJECT-plan.md` (tasks grouped under this story)
-2. Look up the story's GitHub issue number from `sdlc state get` (`github_story_items`)
-   and each task's issue number (`github_task_items`). You'll use these in commits and PRs.
-3. Checkout branch — **always pull base first so this story starts from merged prior work**:
+1. Read the story's tasks from `docs/sdlc/$PROJECT/plan.md` (tasks grouped under this story)
+2. Checkout branch — **always pull base first so this story starts from merged prior work**:
    ```bash
    git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
    git checkout -b sdlc-$PROJECT-<current_story> 2>/dev/null || git checkout sdlc-$PROJECT-<current_story>
    ```
 4. For each `[ ] pending` task under this story, in dependency order:
-   - Implement following `docs/sdlc-$PROJECT-design.md` exactly
+   - Implement following `docs/sdlc/$PROJECT/design.md` exactly
    - Write unit tests (TDD preferred)
    - Run tests — fix all failures before moving on
    - Commit referencing the task issue:
@@ -475,7 +462,7 @@ You are a Senior Developer. One story at a time — read `current_story` from
 9. Transition:
    ```bash
    sdlc state set story_awaiting_review
-   sdlc github sync-board
+
    sdlc tick release
    ```
 
@@ -497,20 +484,18 @@ sdlc github ingest-feedback sdlc-$PROJECT-<current_story> <current_story>
     || gh pr merge sdlc-$PROJECT-<current_story> --merge --body ""
   # Pull base so the next story branches from up-to-date code
   git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
-  sdlc github close-merged          # close story + task issues for merged PRs, move board to Done
   sdlc story complete               # prints "next: STORY-NNN" or "all_complete"
-  sdlc github sync-board
   ```
   - `next: STORY-NNN` → start the next story:
     ```bash
     sdlc story start STORY-NNN
-    sdlc github sync-board
+ 
     ```
     Continue to `story_in_progress` instructions above.
   - `all_complete` → move to documentation phase:
     ```bash
     sdlc state set documentation_in_progress
-    sdlc github sync-board
+ 
     ```
     Continue to `documentation_in_progress` instructions below.
 
@@ -545,9 +530,9 @@ Create or update these files (use `$PROJECT` as the folder name under `docs/`):
 |---|---|
 | `apps/docs/docs/$PROJECT/overview.md` | Product overview: what it does, who it's for, key features |
 | `apps/docs/docs/$PROJECT/getting-started.md` | Installation, configuration, quickstart |
-| `apps/docs/docs/$PROJECT/architecture.md` | Technical architecture — copy/adapt from `docs/sdlc-$PROJECT-design.md` |
+| `apps/docs/docs/$PROJECT/architecture.md` | Technical architecture — copy/adapt from `docs/sdlc/$PROJECT/design.md` |
 | `apps/docs/docs/$PROJECT/api.md` | API reference (if applicable) |
-| `apps/docs/docs/$PROJECT/changelog.md` | What was built in this cycle (derived from stories in `docs/sdlc-$PROJECT-plan.md`) |
+| `apps/docs/docs/$PROJECT/changelog.md` | What was built in this cycle (derived from stories in `docs/sdlc/$PROJECT/plan.md`) |
 
 Add the project to `apps/docs/sidebars.js` (or `sidebars.ts`) if not already present.
 
@@ -559,16 +544,10 @@ cd apps/docs && npm run build
 
 Fix any broken links or MDX errors before continuing. Do not proceed with a failing build.
 
-#### 4. Propagate SDLC artifacts to `main` via `docs/sdlc/$PROJECT/`
+#### 4. Ensure SDLC artifact index exists in `docs/sdlc/$PROJECT/`
 
-On the same branch, copy the phase artifacts so they land on `main` after the PR merges:
-
-```bash
-mkdir -p docs/sdlc/$PROJECT
-cp docs/sdlc-$PROJECT-requirements.md docs/sdlc/$PROJECT/requirements.md 2>/dev/null || true
-cp docs/sdlc-$PROJECT-design.md       docs/sdlc/$PROJECT/design.md       2>/dev/null || true
-cp docs/sdlc-$PROJECT-plan.md         docs/sdlc/$PROJECT/plan.md         2>/dev/null || true
-```
+Artifacts are already written to `docs/sdlc/$PROJECT/` throughout the workflow.
+Just ensure the README index exists (create it if missing):
 
 Also write a summary index:
 
@@ -589,7 +568,7 @@ EOF
 #### 5. Commit and push
 
 ```bash
-git add apps/docs docs/sdlc/$PROJECT
+git add apps/docs docs/sdlc/$PROJECT/README.md
 git commit -m "sdlc(docs): documentation and artifact archive for $PROJECT"
 git push -u origin sdlc-$PROJECT-docs
 ```
@@ -599,7 +578,6 @@ git push -u origin sdlc-$PROJECT-docs
 ```bash
 sdlc github create-pr sdlc-$PROJECT-docs documentation
 sdlc state set documentation_awaiting_approval
-sdlc github sync-board
 ```
 
 Tell the human:
@@ -608,7 +586,7 @@ Tell the human:
 
 What was produced:
   - apps/docs/docs/$PROJECT/ — product + technical docs
-  - docs/sdlc/$PROJECT/ — requirements, design, plan archived to main
+  - docs/sdlc/$PROJECT/ — requirements, design, plan (already live throughout workflow)
 
 Review PR: <PR URL>
 
@@ -630,7 +608,6 @@ sdlc github ingest-feedback sdlc-$PROJECT-docs documentation
   gh pr merge sdlc-$PROJECT-docs --merge --body ""
   git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
   sdlc state set done
-  sdlc github sync-board    # closes all issues, moves board to Done
   ```
   Then open the final PR to merge `$BASE_BRANCH` into `main`:
   ```bash
@@ -643,6 +620,82 @@ sdlc github ingest-feedback sdlc-$PROJECT-docs documentation
 - **open** → check `.sdlc/feedback/documentation.md` for new comments.
   If new comments exist: update docs, rebuild, commit and push to `sdlc-$PROJECT-docs`, stop.
   If no new comments: remind the human to review the PR and stop.
+
+---
+
+### phase: done — wait for final merge, then clean up
+
+Check whether `$BASE_BRANCH` has been merged into `main`:
+
+```bash
+MAIN_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || echo "main")
+MERGE_BASE=$(git merge-base "$BASE_BRANCH" "origin/$MAIN_BRANCH" 2>/dev/null || git merge-base "$BASE_BRANCH" "$MAIN_BRANCH" 2>/dev/null)
+BASE_TIP=$(git rev-parse "$BASE_BRANCH" 2>/dev/null)
+
+if [ "$MERGE_BASE" = "$BASE_TIP" ]; then
+  echo "MERGED"
+else
+  echo "PENDING"
+fi
+```
+
+**PENDING** — the final PR is not yet merged. Remind the developer:
+```
+⏸  Project complete — waiting for final merge.
+
+Merge the PR to land everything on main:
+  gh pr list --head $BASE_BRANCH
+
+Once merged I'll automatically clean up the worktree on the next tick.
+```
+Release tick and stop.
+
+**MERGED** — the final PR is merged. Run the cleanup sequence automatically
+(no confirmation prompt needed — this is the expected post-ship step):
+
+```bash
+WORKTREE_ROOT=$(pwd)
+MAIN_REPO_ROOT=$(dirname "$(dirname "$WORKTREE_ROOT")")
+ARCHIVE_DIR="$MAIN_REPO_ROOT/.projects/$PROJECT"
+
+# 1. Archive .sdlc/ into main repo BEFORE removing worktree
+mkdir -p "$ARCHIVE_DIR"
+cp -r "$WORKTREE_ROOT/.sdlc" "$ARCHIVE_DIR/"
+echo "✓ .sdlc/ archived to .projects/$PROJECT/.sdlc/"
+
+# 2. Ensure .projects/ is git-ignored
+GITIGNORE="$MAIN_REPO_ROOT/.gitignore"
+grep -qx '.projects/' "$GITIGNORE" 2>/dev/null || echo '.projects/' >> "$GITIGNORE"
+echo "✓ .projects/ in .gitignore"
+
+# 3. Remove source files
+find "$WORKTREE_ROOT" -maxdepth 1 \
+  ! -name '.' ! -name '.sdlc' ! -name '.git' ! -name '.gitignore' \
+  -exec rm -rf {} +
+echo "✓ Source files removed"
+
+# 4. Delete sdlc-$PROJECT-* branches (remote + local)
+git push origin --delete $(git branch -r | grep "origin/sdlc-$PROJECT-" | sed 's|origin/||' | tr -d ' ') 2>/dev/null || true
+git branch | grep "sdlc-$PROJECT-" | tr -d ' ' | xargs -r git branch -d 2>/dev/null || true
+echo "✓ Phase/story branches deleted"
+
+# 5. Remove worktree registration
+git -C "$MAIN_REPO_ROOT" worktree remove "$WORKTREE_ROOT" --force 2>/dev/null || true
+git -C "$MAIN_REPO_ROOT" worktree prune
+echo "✓ Worktree unregistered"
+```
+
+Tell the developer:
+```
+✓ $PROJECT shipped and cleaned up.
+
+  Code is on main.
+  Workflow history archived at: .projects/$PROJECT/  (git-ignored)
+
+  Start the next project: /sdlc-start
+```
+
+Release tick and stop.
 
 ---
 
@@ -697,8 +750,7 @@ A Slack notification has been sent automatically.
 - If genuinely blocked by an external dependency, run `sdlc state set blocked`
   and explain clearly what is missing
 - Always call `sdlc tick release` before stopping (even on error)
-- If no GitHub repo is configured, fall back to writing artifacts to
-  `.sdlc/workflow/artifacts/` and tell the human to run `sdlc state approve`
+- If no GitHub repo is configured, run `sdlc state set blocked` and tell the human to configure a repo in spec.yaml
 - Never start a second story while the current story's PR is still open
 
 ---

@@ -7,7 +7,7 @@ from pathlib import Path
 import click
 from rich.table import Table
 
-from sdlc_orchestrator.state_machine import APPROVAL_STATES, STATE_LABELS, State, WorkflowState
+from sdlc_orchestrator.state_machine import Phase, Status, WorkflowState
 from sdlc_orchestrator.memory import MemoryManager
 from sdlc_orchestrator.utils import create_symlink, project_slug, sdlc_home
 from sdlc_orchestrator.commands import console, require_project
@@ -15,13 +15,14 @@ from sdlc_orchestrator.commands import console, require_project
 # Maps each approval gate to the branch Claude should poll
 # Branch names are project-namespaced: sdlc-$PROJECT-<phase>
 # The actual branch name is resolved at runtime using the active project name.
+# Maps (phase, status) approval gates to the branch suffix to poll
+# Key format: "phase:status"  e.g. "requirement:awaiting_approval"
 _GATE_BRANCH_SUFFIXES: dict[str, str] = {
-    "requirement_ready_for_approval": "requirements",
-    "awaiting_design_approval":       "design",
-    "task_plan_ready":                "plan",
-    "story_awaiting_review":          "",
-    "documentation_awaiting_approval": "docs",
-    "blocked":                        "",
+    "requirement:awaiting_approval":    "requirements",
+    "design:awaiting_approval":         "design",
+    "planning:awaiting_approval":       "plan",
+    "implementation:awaiting_approval": "",       # story branch derived from current_story
+    "documentation:awaiting_approval":  "docs",
 }
 
 
@@ -30,20 +31,7 @@ def status():
     """Show current SDLC state (human-readable)."""
     project_dir = require_project()
 
-    # Show all active projects from .sdlc/active
-    active_file = project_dir / ".sdlc" / "active"
-    if active_file.exists():
-        projects = [p for p in active_file.read_text().splitlines() if p.strip()]
-        if len(projects) > 1:
-            console.print("[bold]Active projects:[/bold]")
-            for p in projects:
-                wf_state = "?"
-                try:
-                    wf_state = WorkflowState(project_dir / "worktree" / p).state.value
-                except Exception:
-                    pass
-                console.print(f"  {p}  [dim]{wf_state}[/dim]")
-            console.print()
+
 
     wf = WorkflowState(project_dir)
     spec = MemoryManager(project_dir).spec()
@@ -55,10 +43,10 @@ def status():
     table.add_column("Key", style="dim", width=22)
     table.add_column("Value")
 
-    color = ("yellow" if wf.state in APPROVAL_STATES
-             else "green" if wf.state == State.DONE else "blue")
-    table.add_row("State", f"[{color}]{wf.state.value}[/{color}]")
-    table.add_row("", f"[dim]{STATE_LABELS.get(wf.state, '')}[/dim]")
+    color = ("yellow" if wf.is_approval_gate()
+             else "green" if wf.is_done() else "blue")
+    table.add_row("Phase", f"[{color}]{wf.phase.value}:{wf.status.value}[/{color}]")
+    table.add_row("", f"[dim]{wf.label()}[/dim]")
     table.add_row("Approval needed", "YES — sdlc state approve" if wf.approval_needed else "no")
     table.add_row("Branch", wf._data.get("current_branch", "main"))
     table.add_row("SDLC home", str(sdlc_home(project_dir)))
@@ -88,12 +76,102 @@ def notify(phase, event):
     click.echo(f"notified: {phase}/{event}")
 
 
+_SKILL_ERROR_PATTERNS = [
+    r"unknown command",
+    r"command not found",
+    r"no such skill",
+    r"skill not found",
+    r"unknown slash command",
+    r"sdlc[-_]orchestrate.*not found",
+    r"invalid agent",
+    r"agent.*not found",
+    r"cannot find.*sdlc",
+]
+
+
+def _check_skills_health(executor: str) -> list[str]:
+    """Return a list of problem descriptions if skills are missing or broken."""
+    import json as _json
+    from sdlc_orchestrator.memory import executor_config
+    from importlib.resources import files as _files
+
+    _, skills_dir, _ = executor_config(executor)
+    problems: list[str] = []
+
+    try:
+        pkg_skills = {f.name for f in (_files("sdlc_orchestrator") / "skills").iterdir()}
+    except Exception:
+        return []
+
+    for skill_name in pkg_skills:
+        dest = skills_dir / skill_name
+        if not dest.exists():
+            problems.append(f"missing skill file: {dest}")
+        elif dest.stat().st_size == 0:
+            problems.append(f"empty skill file: {dest}")
+
+        if executor == "kiro":
+            agent_name = skill_name.replace(".md", "")
+            agent_json = Path.home() / ".kiro" / "agents" / f"{agent_name}.json"
+            if not agent_json.exists():
+                problems.append(f"missing agent JSON: {agent_json}")
+            else:
+                try:
+                    data = _json.loads(agent_json.read_text())
+                    if not data.get("prompt"):
+                        problems.append(f"invalid agent JSON (no prompt): {agent_json}")
+                except Exception:
+                    problems.append(f"corrupt agent JSON: {agent_json}")
+
+    return problems
+
+
+def _scan_logs_for_skill_errors(project_dir: Path) -> list[str]:
+    """Scan recent workflow logs for skill-not-found error patterns."""
+    import re
+    from sdlc_orchestrator.utils import sdlc_home
+
+    logs_dir = sdlc_home(project_dir) / "workflow" / "logs"
+    if not logs_dir.exists():
+        return []
+
+    patterns = [re.compile(p, re.IGNORECASE) for p in _SKILL_ERROR_PATTERNS]
+    hits: list[str] = []
+
+    # Check the 5 most recently modified log files
+    log_files = sorted(logs_dir.glob("*.log"), key=lambda f: f.stat().st_mtime, reverse=True)[:5]
+    for log_file in log_files:
+        try:
+            for line in log_file.read_text(errors="replace").splitlines()[-200:]:
+                if any(p.search(line) for p in patterns):
+                    hits.append(f"{log_file.name}: {line.strip()[:120]}")
+                    break  # one hit per file is enough
+        except Exception:
+            continue
+
+    return hits
+
+
 def _find_all_project_dirs(scan_dir: Path | None = None) -> list[tuple[Path, str]]:
     """Return (project_dir, project_name) for all projects found.
-    Checks ~/.sdlc/projects symlinks first, then scans scan_dir for .sdlc/ directories."""
+    Checks ~/.sdlc/projects symlinks first, then scans for worktrees with .sdlc/."""
     from sdlc_orchestrator.utils import get_active_project
-    results = []
-    seen = set()
+    results: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
+
+    def add_project(path: Path, name: str | None = None) -> None:
+        try:
+            project_dir = path.resolve()
+        except Exception:
+            return
+        if project_dir.name == ".sdlc":
+            project_dir = project_dir.parent
+        sdlc_dir = project_dir / ".sdlc"
+        has_state = (sdlc_dir / "spec.yaml").exists() or (sdlc_dir / "workflow" / "state.json").exists()
+        if not has_state or project_dir in seen:
+            return
+        seen.add(project_dir)
+        results.append((project_dir, get_active_project(project_dir)))
 
     # 1. ~/.sdlc/projects symlinks
     projects_home = Path.home() / ".sdlc" / "projects"
@@ -102,21 +180,22 @@ def _find_all_project_dirs(scan_dir: Path | None = None) -> list[tuple[Path, str
             if not (link.is_symlink() and link.exists()):
                 continue
             try:
-                sdlc_projects_dir = link.resolve().parent
-                project_dir = sdlc_projects_dir.parent.parent
-                if (project_dir / ".sdlc").exists() and project_dir not in seen:
-                    seen.add(project_dir)
-                    results.append((project_dir, link.resolve().name))
+                add_project(link.resolve(), link.name)
             except Exception:
                 continue
 
-    # 2. Scan directory for .sdlc/ subdirectories
+    # 2. Scan directory for worktree/* dirs with .sdlc/ state
     if scan_dir and scan_dir.exists():
         for child in scan_dir.iterdir():
-            if child.is_dir() and (child / ".sdlc").exists() and child not in seen:
-                seen.add(child)
-                active = get_active_project(child)
-                results.append((child, active))
+            if not child.is_dir():
+                continue
+            worktrees = child / "worktree"
+            if worktrees.exists():
+                for wt in worktrees.iterdir():
+                    if wt.is_dir() and (wt / ".sdlc").exists():
+                        add_project(wt)
+            elif (child / ".sdlc").exists():
+                add_project(child)
 
     return results
 
@@ -129,13 +208,15 @@ def _find_all_project_dirs(scan_dir: Path | None = None) -> list[tuple[Path, str
               help="Watch all projects under ~/.sdlc/projects (default: on)")
 @click.option("--projects-dir", default=None, type=click.Path(exists=True, file_okay=False),
               help="Directory to scan for projects (defaults to parent of cwd)")
-def watch(interval, stale_timeout, all_projects, projects_dir):
+@click.option("--fix-skills", is_flag=True, default=False,
+              help="Auto-reinstall skills when missing or broken (detected from health check or logs)")
+def watch(interval, stale_timeout, all_projects, projects_dir, fix_skills):
     """Watch all projects for PR approvals and stuck agents, trigger automatically."""
     import os
     import time
     from sdlc_orchestrator.integrations.github import get_pr_status, is_available
     from sdlc_orchestrator.integrations.slack import notify_from_spec
-    from sdlc_orchestrator.commands.init import trigger_agent
+    from sdlc_orchestrator.commands.init import trigger_agent, install_global_skills
 
     # Collect projects to watch
     scan = Path(projects_dir) if projects_dir else Path.cwd().parent
@@ -150,10 +231,16 @@ def watch(interval, stale_timeout, all_projects, projects_dir):
 
     console.print(f"[bold]sdlc watch[/bold] — polling every {interval}s, stale timeout {stale_timeout}s")
     console.print(f"  watching {len(project_entries)} project(s)")
+    if fix_skills:
+        console.print("  skill auto-fix: [green]enabled[/green]")
     console.print("  Press Ctrl-C to stop.\n")
 
     # Per-project tracking: {project_dir: {state, state_since, last_pr_status}}
     tracking: dict[Path, dict] = {}
+    # Track which executors have already had skills fixed this session to avoid spam
+    # {executor: last_fix_time}
+    skills_fixed_at: dict[str, float] = {}
+    SKILL_FIX_COOLDOWN = 300  # don't re-fix the same executor within 5 minutes
 
     while True:
         try:
@@ -165,7 +252,7 @@ def watch(interval, stale_timeout, all_projects, projects_dir):
                 except Exception:
                     continue
 
-                current_state = wf.state.value
+                current_state = f"{wf.phase.value}:{wf.status.value}"
                 spec = MemoryManager(project_dir).spec()
                 repo = spec.get("repo", "")
                 label = spec.get("project_name", project_dir.name)
@@ -176,17 +263,37 @@ def watch(interval, stale_timeout, all_projects, projects_dir):
                     "last_pr_status": "",
                 })
 
+                # ── skill health check ────────────────────────────────────
+                if fix_skills:
+                    executor = spec.get("executor", "claude-code")
+                    last_fix = skills_fixed_at.get(executor, 0)
+                    if now - last_fix >= SKILL_FIX_COOLDOWN:
+                        problems = _check_skills_health(executor)
+                        if not problems:
+                            log_hits = _scan_logs_for_skill_errors(project_dir)
+                            if log_hits:
+                                problems = log_hits
+                        if problems:
+                            console.print(f"[yellow]SKILL-FIX[/yellow]  {label} ({executor}): {problems[0]}")
+                            console.print(f"  reinstalling skills for [bold]{executor}[/bold] ...")
+                            try:
+                                install_global_skills(force=True, executor=executor)
+                                console.print(f"  [green]✓[/green] skills reinstalled for {executor}")
+                            except Exception as e:
+                                console.print(f"  [red]skill reinstall failed:[/red] {e}")
+                            skills_fixed_at[executor] = now
+
                 # Detect state change — reset stale timer
                 if track["state"] != current_state:
                     track["state"] = current_state
                     track["state_since"] = now
                     track["last_pr_status"] = ""
 
-                if wf.state == State.DONE:
+                if wf.is_done():
                     continue
 
                 # ── blocked: notify Slack, don't trigger ──────────────────
-                if current_state == "blocked":
+                if wf.status == Status.BLOCKED:
                     stale_secs = now - track["state_since"]
                     if stale_secs < interval * 2:  # only notify once
                         console.print(f"[red]BLOCKED[/red]  {label}: {wf.blocked_reason or 'no reason given'}")
@@ -211,11 +318,13 @@ def watch(interval, stale_timeout, all_projects, projects_dir):
                 if not repo or not is_available():
                     continue
 
-                slug = project_slug(project_dir)
-                active = project_name or wf._data.get("active_project", slug)
-                suffix = _GATE_BRANCH_SUFFIXES.get(current_state, "")
-                if current_state == "story_awaiting_review":
-                    branch = f"sdlc-{active}-{wf.current_story.lower()}" if wf.current_story else ""
+                if not project_name:
+                    continue
+                active = project_name
+                gate_key = f"{wf.phase.value}:{wf.status.value}"
+                suffix = _GATE_BRANCH_SUFFIXES.get(gate_key, "")
+                if wf.phase.value == "implementation" and wf.current_story:
+                    branch = f"sdlc-{active}-{wf.current_story.lower()}"
                 elif suffix:
                     branch = f"sdlc-{active}-{suffix}"
                 else:
@@ -335,10 +444,11 @@ def tick_acquire():
     """Acquire the tick lock. Exits non-zero if already locked or state is done."""
     import fcntl
     import os
+    import time
     project_dir = require_project()
 
     wf = WorkflowState(project_dir)
-    if wf.state == State.DONE:
+    if wf.is_done():
         click.echo("done: workflow is complete — run 'sdlc project close' to start a new cycle", err=True)
         sys.exit(2)
 
@@ -348,7 +458,9 @@ def tick_acquire():
     try:
         fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         lock_fh.flush()
-        lock_path.with_suffix(".pid").write_text(str(os.getpid()))
+        pid = os.getpid()
+        lock_path.with_suffix(".pid").write_text(str(pid))
+        WorkflowState(project_dir).set_process(pid=pid, last_tick=time.time())
         click.echo("ok: lock acquired")
     except BlockingIOError:
         click.echo("locked: another tick is running", err=True)

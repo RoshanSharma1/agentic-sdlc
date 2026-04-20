@@ -23,19 +23,17 @@ the resulting `.sdlc/memory/project.md`.
 
 ## Step 1b — Check for existing spec
 
-Read the active project's spec (spec lives at `.sdlc/projects/<active>/spec.yaml`):
+Read the project spec (spec lives at `.sdlc/spec.yaml` in this worktree):
 ```bash
-cat .sdlc/projects/$(cat .sdlc/active 2>/dev/null || echo default)/spec.yaml
+cat .sdlc/spec.yaml
 ```
 
 If fields like `description`, `tech_stack`, or `repo` are already filled in, use them as defaults and only ask for what's missing. Never re-ask for information that's already complete.
 
-> **Multi-project repos:** check which project is active first:
+> **Worktree model:** each `worktree/<project>` directory is one SDLC project. If you are in the main repo, stop and ask the developer to run `/sdlc-start` or move into the generated worktree first.
 > ```bash
-> sdlc project list
+> test -f .sdlc/spec.yaml || echo "Not inside an SDLC worktree"
 > ```
-> If you need a new project: `sdlc project new <name>` — then continue setup for it.
-> If you need to switch: `sdlc project switch <name>`.
 
 ---
 
@@ -67,14 +65,12 @@ needed. Don't follow a rigid script.
 
 ## Step 3 — Write spec.yaml
 
-Write the spec to the active project's path:
+Write the spec to this worktree:
 ```bash
-# Get the active project name
-ACTIVE=$(cat .sdlc/active 2>/dev/null || echo default)
-# Spec path: .sdlc/projects/<active>/spec.yaml
+# Spec path: .sdlc/spec.yaml
 ```
 
-Write `.sdlc/projects/$ACTIVE/spec.yaml` with the collected answers:
+Write `.sdlc/spec.yaml` with the collected answers:
 
 ```yaml
 project_name: <name>
