@@ -111,7 +111,7 @@ class MemoryManager:
 
     # ── writers ──────────────────────────────────────────────────────────────
 
-    ALL_PHASES = ["requirement", "design", "planning", "implementation", "testing", "review", "documentation"]
+    ALL_PHASES = ["requirement", "design", "planning", "implementation", "testing", "documentation"]
 
     def write_spec(self, spec: dict) -> None:
         self._sdlc.mkdir(parents=True, exist_ok=True)

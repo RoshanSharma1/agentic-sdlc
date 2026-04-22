@@ -2,7 +2,7 @@
 State machine: phases → stories → tasks → done.
 
 Hierarchy:
-  phase (requirement | design | planning | implementation | documentation | done)
+  phase (requirement | design | planning | implementation | testing | documentation | done)
     └── status (pending | in_progress | awaiting_approval | blocked | done)
         └── stories  (ALL phases have stories)
               single-artifact phases: one story keyed by phase name
@@ -29,6 +29,7 @@ class Phase(str, Enum):
     DESIGN         = "design"
     PLANNING       = "planning"
     IMPLEMENTATION = "implementation"
+    TESTING        = "testing"
     DOCUMENTATION  = "documentation"
     DONE           = "done"
 
@@ -54,6 +55,7 @@ PHASE_ORDER = [
     Phase.DESIGN,
     Phase.PLANNING,
     Phase.IMPLEMENTATION,
+    Phase.TESTING,
     Phase.DOCUMENTATION,
 ]
 
@@ -70,6 +72,7 @@ PHASE_LABELS: dict[Phase, str] = {
     Phase.DESIGN:         "Design",
     Phase.PLANNING:       "Planning",
     Phase.IMPLEMENTATION: "Implementation",
+    Phase.TESTING:        "Testing",
     Phase.DOCUMENTATION:  "Documentation",
     Phase.DONE:           "Complete",
 }
@@ -94,6 +97,8 @@ _LEGACY_MAP: dict[str, tuple[Phase | None, Status]] = {
     "story_in_progress":               (Phase.IMPLEMENTATION, Status.IN_PROGRESS),
     "story_awaiting_review":           (Phase.IMPLEMENTATION, Status.AWAITING_APPROVAL),
     "feedback_incorporation":          (Phase.IMPLEMENTATION, Status.IN_PROGRESS),
+    "testing_in_progress":             (Phase.TESTING,        Status.IN_PROGRESS),
+    "testing_awaiting_approval":       (Phase.TESTING,        Status.AWAITING_APPROVAL),
     "documentation_in_progress":       (Phase.DOCUMENTATION,  Status.IN_PROGRESS),
     "documentation_awaiting_approval": (Phase.DOCUMENTATION,  Status.AWAITING_APPROVAL),
     "blocked":                         (None,                 Status.BLOCKED),
@@ -212,8 +217,10 @@ class WorkflowState:
             "artifacts": {
                 "requirement_questions": None,
                 "requirements": None,
+                "test_cases": None,
                 "design": None,
                 "plan": None,
+                "test_results": None,
                 "test_report": None,
                 "review_summary": None,
             },
@@ -411,12 +418,12 @@ class WorkflowState:
             self._data["status"] = Status.AWAITING_APPROVAL.value
 
     def finish_implementation(self) -> None:
-        """All stories complete — advance to documentation phase."""
+        """All stories complete — advance to testing phase."""
         self._push_history()
         self._data["phases"][Phase.IMPLEMENTATION.value]["status"] = Status.DONE.value
-        self._data["phase"] = Phase.DOCUMENTATION.value
+        self._data["phase"] = Phase.TESTING.value
         self._data["status"] = Status.IN_PROGRESS.value
-        self._data["phases"][Phase.DOCUMENTATION.value]["status"] = Status.IN_PROGRESS.value
+        self._data["phases"][Phase.TESTING.value]["status"] = Status.IN_PROGRESS.value
         self._data["retry_count"] = 0
         self.save()
 

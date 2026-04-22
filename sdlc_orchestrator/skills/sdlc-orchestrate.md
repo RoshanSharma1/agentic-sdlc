@@ -20,7 +20,9 @@ yet approved.
 >     ├── sdlc-$PROJECT-requirements  → PR → MERGE → worktree/$PROJECT
 >     ├── sdlc-$PROJECT-design        → PR → MERGE → worktree/$PROJECT
 >     ├── sdlc-$PROJECT-plan          → PR → MERGE → worktree/$PROJECT
->     └── sdlc-$PROJECT-story-NNN     → PR → MERGE → worktree/$PROJECT
+>     ├── sdlc-$PROJECT-story-NNN     → PR → MERGE → worktree/$PROJECT
+>     ├── sdlc-$PROJECT-testing       → PR → MERGE → worktree/$PROJECT
+>     └── sdlc-$PROJECT-docs          → PR → MERGE → worktree/$PROJECT
 >
 > When all stories done:
 >   Agent opens PR: worktree/$PROJECT → main
@@ -115,9 +117,10 @@ reviewable via PR, and persistent outside the local machine.
 
 | Phase | Branch | Artifact file |
 |-------|--------|---------------|
-| requirement | `sdlc-$PROJECT-requirements` | `docs/sdlc/$PROJECT/requirements.md` |
+| requirement | `sdlc-$PROJECT-requirements` | `docs/sdlc/$PROJECT/requirements.md`, `docs/sdlc/$PROJECT/test-cases.md` |
 | design | `sdlc-$PROJECT-design` | `docs/sdlc/$PROJECT/design.md` |
 | planning | `sdlc-$PROJECT-plan` | `docs/sdlc/$PROJECT/plan.md` |
+| testing | `sdlc-$PROJECT-testing` | `docs/sdlc/$PROJECT/test-results.md` |
 | implementation | `sdlc/implementation` | (code) |
 
 ---
@@ -167,6 +170,14 @@ BYPASS=$(echo "$STATE" | grep "^bypass_approvals:" | cut -d' ' -f2-)
             → if all_complete: sdlc state approve → stop
        d. open? → check feedback, address or remind, sdlc tick release, stop
 
+     TESTING GATE (phase=testing, status=awaiting_approval) — only if NOT bypassed:
+       a. sdlc github pr-status sdlc-$PROJECT-testing
+       b. sdlc github ingest-feedback sdlc-$PROJECT-testing testing
+       c. approved/merged?
+            → sdlc state approve
+            → continue to step 4
+       d. open? → check feedback, address or remind, sdlc tick release, stop
+
 4. resume check                   — read existing artifact or story progress
 5. execute current phase/story    — see phase instructions below
 6. commit on phase/story branch
@@ -186,6 +197,7 @@ Never skip a step. Never advance state before work is complete and committed.
 | `design` | `design` |
 | `planning` | `plan` |
 | `implementation` | `$STORY` (e.g. `story-001`) |
+| `testing` | `testing` |
 | `documentation` | `docs` |
 
 ---
@@ -214,9 +226,14 @@ task_plan_ready                      ← poll sdlc-$PROJECT-plan PR
   │    → [you: implement tasks, run tests, commit on sdlc-$PROJECT-story-NNN]│
   │  story_awaiting_review          ← poll sdlc-$PROJECT-story-NNN PR       │
   │    → approved + more stories:  start next story                 │
-  │    → approved + last story:    done                             │
+  │    → approved + last story:    testing                          │
   │    → feedback: feedback_incorporation → story_in_progress       │
   └─────────────────────────────────────────────────────────────────┘
+
+testing_in_progress
+  → [you: execute test_cases.md, fix defects, write test-results.md, open PR]
+testing_awaiting_approval            ← poll sdlc-$PROJECT-testing PR
+  → [you: documentation]
 
 feedback_incorporation
   → [loop back to design / plan / story_in_progress]
@@ -260,23 +277,31 @@ Also read the agent context file
    - Success metrics / definition of done
    - If spec is sparse, include a section "**Open questions for review**" listing
      anything ambiguous — the human can answer in PR comments
-4. Record artifact path and commit:
+4. Also write `docs/sdlc/$PROJECT/test-cases.md` as the acceptance-test source of truth:
+   - `TC-XXX` identifier
+   - linked requirement(s)
+   - scenario
+   - type (`api`, `ui`, `integration`, `performance`, `manual`)
+   - expected result
+   - evidence to capture (`response`, `screenshot`, `log`, etc.)
+5. Record artifact paths and commit:
    ```bash
    sdlc artifact set requirements docs/sdlc/$PROJECT/requirements.md
-   git add docs/sdlc/$PROJECT/requirements.md
+   sdlc artifact set test_cases docs/sdlc/$PROJECT/test-cases.md
+   git add docs/sdlc/$PROJECT/requirements.md docs/sdlc/$PROJECT/test-cases.md
    git commit -m "sdlc(requirement): draft requirements"
    git push -u origin sdlc-$PROJECT-requirements
    ```
-5. Open PR:
+6. Open PR:
    ```bash
    sdlc github create-pr sdlc-$PROJECT-requirements requirement
    ```
-6. Run:
+7. Run:
    ```bash
    sdlc state set requirement_ready_for_approval
 
    ```
-7. Tell the human:
+8. Tell the human:
    ```
    ⏸ Requirements drafted.
 
@@ -296,7 +321,7 @@ sdlc github ingest-feedback sdlc-$PROJECT-requirements requirement
 ```
 
 - **approved or merged** → apply any feedback from `.sdlc/feedback/requirement.md`
-  to `docs/sdlc/$PROJECT/requirements.md`, commit and push, then **merge the PR and update base**:
+  to `docs/sdlc/$PROJECT/requirements.md` and `docs/sdlc/$PROJECT/test-cases.md`, commit and push, then **merge the PR and update base**:
   ```bash
   gh pr merge sdlc-$PROJECT-requirements --merge --body ""
   git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
@@ -304,7 +329,7 @@ sdlc github ingest-feedback sdlc-$PROJECT-requirements requirement
   ```
 
 - **open** → check `.sdlc/feedback/requirement.md` for new comments.
-  If new comments exist: update `docs/sdlc/$PROJECT/requirements.md`, commit and push, stop.
+  If new comments exist: update `docs/sdlc/$PROJECT/requirements.md` and `docs/sdlc/$PROJECT/test-cases.md`, commit and push, stop.
   If no new comments: remind the human to review the PR and stop.
 
 ---
@@ -371,7 +396,7 @@ You are a Project Manager. Read `docs/sdlc/$PROJECT/design.md` and `docs/sdlc/$P
    git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
    git checkout -b sdlc-$PROJECT-plan 2>/dev/null || git checkout sdlc-$PROJECT-plan
    ```
-2. Write `docs/sdlc/$PROJECT/plan.md` — stories grouping tasks:
+2. Write `docs/sdlc/$PROJECT/plan.md` — stories grouping tasks. The plan must explicitly reference the coverage already defined in `docs/sdlc/$PROJECT/test-cases.md`:
 
    **Rule: every phase must have at least one STORY-NNN, and every story gets its own PR.**
    Structure stories by phase:
@@ -492,12 +517,12 @@ sdlc github ingest-feedback sdlc-$PROJECT-<current_story> <current_story>
  
     ```
     Continue to `story_in_progress` instructions above.
-  - `all_complete` → move to documentation phase:
+  - `all_complete` → move to testing phase:
     ```bash
-    sdlc state set documentation_in_progress
+    sdlc state set testing_in_progress
  
     ```
-    Continue to `documentation_in_progress` instructions below.
+    Continue to `testing_in_progress` instructions below.
 
 - **open** → check `.sdlc/feedback/<current_story>.md` for new comments.
   If new comments exist: address them on `sdlc-$PROJECT-<current_story>` branch,
@@ -509,9 +534,66 @@ sdlc github ingest-feedback sdlc-$PROJECT-<current_story> <current_story>
 
 ---
 
+### state: testing_in_progress
+
+You are a QA Engineer. All implementation stories are merged into `$BASE_BRANCH`.
+
+1. Read:
+   - `docs/sdlc/$PROJECT/requirements.md`
+   - `docs/sdlc/$PROJECT/test-cases.md`
+   - `docs/sdlc/$PROJECT/plan.md`
+2. Checkout the testing branch from the latest base:
+   ```bash
+   git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
+   git checkout -b sdlc-$PROJECT-testing 2>/dev/null || git checkout sdlc-$PROJECT-testing
+   ```
+3. Execute the full validation pass:
+   - run all automated tests
+   - run linting and type checks
+   - exercise each testcase from `test-cases.md`
+   - capture evidence for each testcase (`response`, `screenshot`, `log`, etc.)
+4. If a testcase fails, fix the product code on this branch, rerun the affected checks, and keep iterating until the issue is resolved or you have 3 failed attempts on the same blocker.
+5. Write `docs/sdlc/$PROJECT/test-results.md` with:
+   - summary of the validation run
+   - requirement-to-testcase coverage
+   - testcase execution table with evidence references
+   - any remaining blockers
+6. Record the artifact path and commit:
+   ```bash
+   sdlc artifact set test_results docs/sdlc/$PROJECT/test-results.md
+   git add docs/sdlc/$PROJECT/test-results.md
+   git add <any code fixes from testing>
+   git commit -m "sdlc(testing): validate release candidate"
+   git push -u origin sdlc-$PROJECT-testing
+   ```
+7. Open PR and set approval gate:
+   ```bash
+   sdlc github create-pr sdlc-$PROJECT-testing testing
+   sdlc state set testing_awaiting_approval
+   ```
+
+### state: testing_awaiting_approval
+
+```bash
+sdlc github pr-status sdlc-$PROJECT-testing
+sdlc github ingest-feedback sdlc-$PROJECT-testing testing
+```
+
+- **approved or merged** → apply any feedback from `.sdlc/feedback/testing.md`
+  to `docs/sdlc/$PROJECT/test-results.md` and any required code fixes, rerun the relevant checks, then **merge the PR and update base**:
+  ```bash
+  gh pr merge sdlc-$PROJECT-testing --merge --body ""
+  git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
+  sdlc state set documentation_in_progress
+  ```
+
+- **open** → check `.sdlc/feedback/testing.md` for new comments.
+  If new comments exist: address them on `sdlc-$PROJECT-testing`, commit and push, stop.
+  If no new comments: remind the human to review the PR and stop.
+
 ### state: documentation_in_progress
 
-You are a Technical Writer. All implementation stories are complete.
+You are a Technical Writer. Testing is complete and the release candidate is validated.
 
 **Goal:** update `apps/docs` with product-level and technical documentation for this project, then propagate all SDLC artifacts to `main`.
 
@@ -559,8 +641,10 @@ Completed: $(date -u +%Y-%m-%d)
 
 ## Artifacts
 - [Requirements](requirements.md)
+- [Test Cases](test-cases.md)
 - [Design](design.md)
 - [Plan](plan.md)
+- [Test Results](test-results.md)
 - [Docs](../../../apps/docs/docs/$PROJECT/)
 EOF
 ```
@@ -586,7 +670,7 @@ Tell the human:
 
 What was produced:
   - apps/docs/docs/$PROJECT/ — product + technical docs
-  - docs/sdlc/$PROJECT/ — requirements, design, plan (already live throughout workflow)
+  - docs/sdlc/$PROJECT/ — requirements, test cases, design, plan, test results (already live throughout workflow)
 
 Review PR: <PR URL>
 

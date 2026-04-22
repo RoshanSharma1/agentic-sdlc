@@ -141,7 +141,7 @@ Ask only these two questions:
 Then, **if `--no-approvals` was NOT passed**, ask:
 
 ```
-Do you want to require manual approval at each phase gate (requirements, design, plan, stories)?
+Do you want to require manual approval at each phase gate (requirements, design, plan, stories, testing, docs)?
   [Y] Yes — I'll review and approve each phase PR on GitHub (default)
   [N] No  — agent advances automatically through all phases
 ```
@@ -184,6 +184,8 @@ Branch structure:
     sdlc-<name>-design              → PR → worktree/<name>
     sdlc-<name>-plan                → PR → worktree/<name>
     sdlc-<name>-story-001           → PR → worktree/<name>
+    sdlc-<name>-testing             → PR → worktree/<name>
+    sdlc-<name>-docs                → PR → worktree/<name>
     ...
 
   When all stories are done:

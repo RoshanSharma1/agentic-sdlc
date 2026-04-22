@@ -323,7 +323,7 @@ def _setup_new(upgrade_skills: bool, no_approvals: bool = False) -> None:
     if no_approvals:
         spec["phase_approvals"] = {
             "requirement": False, "design": False, "planning": False,
-            "implementation": False, "testing": False, "review": False,
+            "implementation": False, "testing": False, "documentation": False,
         }
     common_setup(project_dir, spec, is_new=True, upgrade_skills=upgrade_skills)
 
@@ -356,7 +356,7 @@ def _setup_local(project_dir: Path, upgrade_skills: bool, no_approvals: bool = F
     if no_approvals:
         spec["phase_approvals"] = {
             "requirement": False, "design": False, "planning": False,
-            "implementation": False, "testing": False, "review": False,
+            "implementation": False, "testing": False, "documentation": False,
         }
 
     set_initial_state(project_dir, "requirement")

@@ -325,7 +325,21 @@ PHASE_ARTIFACT_KEYS: dict[str, list[str]] = {
     Phase.REQUIREMENT.value: ["requirements", "requirement_questions"],
     Phase.DESIGN.value: ["design"],
     Phase.PLANNING.value: ["plan"],
+    Phase.TESTING.value: ["test_results", "test_report"],
     Phase.DOCUMENTATION.value: ["documentation", "docs", "review_summary"],
+}
+TESTING_ARTIFACT_KEYS = ["test_cases", "test_results", "test_report"]
+ARTIFACT_LABELS: dict[str, str] = {
+    "requirement_questions": "Questions",
+    "requirements": "Requirements",
+    "design": "Design",
+    "plan": "Plan",
+    "test_cases": "Test cases",
+    "test_results": "Test results",
+    "test_report": "Test report",
+    "documentation": "Documentation",
+    "docs": "Docs",
+    "review_summary": "Review summary",
 }
 _COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$", re.IGNORECASE)
 
@@ -419,6 +433,19 @@ def _artifact_link(name: str, key: str) -> str:
     return f"/api/projects/{quote(name, safe='')}/artifact/{quote(key, safe='')}"
 
 
+def _artifact_group(key: str) -> str:
+    if key in TESTING_ARTIFACT_KEYS:
+        return "testing"
+    for phase_key, keys in PHASE_ARTIFACT_KEYS.items():
+        if key in keys:
+            return phase_key
+    return "other"
+
+
+def _artifact_label(key: str) -> str:
+    return ARTIFACT_LABELS.get(key, key.replace("_", " ").title())
+
+
 def _state_link(name: str) -> str:
     return f"/api/projects/{quote(name, safe='')}/state"
 
@@ -486,9 +513,18 @@ def _project_data(project_dir: Path, name: str) -> dict[str, Any]:
     # Build artifact links from state.json. These open the local artifact through
     # the dashboard so archived or not-yet-merged artifacts still work.
     artifact_links: dict[str, str] = {}
+    artifact_items: list[dict[str, str]] = []
     for art_key, path in wf.artifacts.items():
-        if path:
-            artifact_links[art_key] = _artifact_link(name, art_key)
+        if not path:
+            continue
+        url = _artifact_link(name, art_key)
+        artifact_links[art_key] = url
+        artifact_items.append({
+            "key": art_key,
+            "label": _artifact_label(art_key),
+            "group": _artifact_group(art_key),
+            "url": url,
+        })
     for phase_key, keys in PHASE_ARTIFACT_KEYS.items():
         for art_key in keys:
             if wf.artifacts.get(art_key):
@@ -616,6 +652,7 @@ def _project_data(project_dir: Path, name: str) -> dict[str, Any]:
         "pr_links": pr_links,
         "commit_links": commit_links,
         "artifact_links": artifact_links,
+        "artifact_items": artifact_items,
         "held": held,
         "process_status": {"status": proc_status, "pid": pid, "last_tick": last_tick, "is_running": is_running},
     }
@@ -678,13 +715,13 @@ def get_artifact(name: str, key: str):
     if isinstance(raw_path, str) and raw_path.startswith(("http://", "https://")):
         return RedirectResponse(raw_path)
     artifact = _artifact_path(wf_dir, raw_path)
-    if not artifact:
-        raise HTTPException(404, f"Artifact not found: {raw_path}")
-    safe_path = _safe_state_file(wf_dir, artifact)
-    return PlainTextResponse(
-        safe_path.read_text(errors="replace"),
-        media_type="text/markdown; charset=utf-8",
-    )
+    if artifact:
+        safe_path = _safe_state_file(wf_dir, artifact)
+        return PlainTextResponse(
+            safe_path.read_text(errors="replace"),
+            media_type="text/markdown; charset=utf-8",
+        )
+    return PlainTextResponse(str(raw_path), media_type="text/plain; charset=utf-8")
 
 
 @app.post("/api/projects/{name}/approve")

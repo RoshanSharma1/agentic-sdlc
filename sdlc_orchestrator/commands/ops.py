@@ -22,6 +22,7 @@ _GATE_BRANCH_SUFFIXES: dict[str, str] = {
     "design:awaiting_approval":         "design",
     "planning:awaiting_approval":       "plan",
     "implementation:awaiting_approval": "",       # story branch derived from current_story
+    "testing:awaiting_approval":        "testing",
     "documentation:awaiting_approval":  "docs",
 }
 

@@ -1,6 +1,6 @@
 # SDLC Orchestrator
 
-An **AI agent extension** that turns any supported AI coding agent into an autonomous software development assistant. It drives the full SDLC — requirements, design, planning, implementation, documentation, and review — with human approval gates at each critical milestone.
+An **AI agent extension** that turns any supported AI coding agent into an autonomous software development assistant. It drives the full SDLC — requirements, design, planning, implementation, testing, and documentation — with human approval gates at each critical milestone.
 
 > **What kind of extension is this?**
 > SDLC Orchestrator extends your AI coding agent with three components:
@@ -33,7 +33,9 @@ sdlc init                →   Scaffolds .sdlc/ directory
                              Opens PR: sdlc-<project>-plan → worktree/<project>
 ⏸  Approve PR            →   Implements story by story, opens PR per story
 ⏸  Approve each story PR →   Moves to next story
-                             When all stories done: writes docs + archives artifacts
+                             When all stories done: executes testing phase, fixes issues, writes test results
+                             Opens PR: sdlc-<project>-testing → worktree/<project>
+⏸  Approve PR            →   Writes docs + archives artifacts
                              Opens PR: sdlc-<project>-docs → worktree/<project>
 ⏸  Approve PR            →   Opens final PR: worktree/<project> → main
 ⏸  Merge when ready      →   Ships to main
@@ -198,17 +200,29 @@ sdlc webhook --port 8080 --secret your-webhook-secret
 
 Implementation is broken into stories. For each story, the agent opens a PR on a `sdlc-<project>-story-NNN` branch. Review it normally in GitHub.
 
-When you approve the PR, the agent marks the story complete and moves to the next one. When all stories are done it automatically enters the documentation phase.
+When you approve the PR, the agent marks the story complete and moves to the next one. When all stories are done it automatically enters the testing phase.
 
----
-
-### Step 8 — Documentation phase
+### Step 8 — Testing phase
 
 After all stories are approved the agent:
 
+1. Reads the requirement-derived `test-cases.md` checklist
+2. Runs the full automated validation pass and exercises each testcase
+3. Fixes defects found during testing on a dedicated `sdlc-<project>-testing` branch
+4. Writes `docs/sdlc/<project>/test-results.md` with per-test evidence and blockers
+5. Opens a PR: `sdlc-<project>-testing → worktree/<project>`
+
+Approve the PR and the agent will merge the testing fixes into the base branch before documentation starts.
+
+---
+
+### Step 9 — Documentation phase
+
+After testing is approved the agent:
+
 1. Writes product and technical documentation into `apps/docs/docs/<project>/` (Docusaurus)
 2. Runs `npm run build` in `apps/docs` — build must pass before the PR is opened
-3. Archives all phase artifacts (`requirements.md`, `design.md`, `plan.md`) to `docs/sdlc/<project>/` so they land on `main` after merge
+3. Archives all phase artifacts (`requirements.md`, `test-cases.md`, `design.md`, `plan.md`, `test-results.md`) to `docs/sdlc/<project>/` so they land on `main` after merge
 4. Opens a PR: `sdlc-<project>-docs → worktree/<project>`
 
 Approve the PR, then the agent opens the final `worktree/<project> → main` PR for you to merge when ready to ship.
@@ -232,6 +246,7 @@ phase_approvals:
   design: true
   planning: false       # agent advances automatically
   implementation: false
+  testing: false
   documentation: true
 ```
 
@@ -299,7 +314,6 @@ phase_approvals:             # Set to false to let the agent advance without wai
   planning: true
   implementation: true
   testing: true
-  review: true
   documentation: true
 ```
 
@@ -307,7 +321,7 @@ phase_approvals:             # Set to false to let the agent advance without wai
 
 ## State Machine
 
-The orchestrator manages 13 states:
+The orchestrator manages 15 states:
 
 | State | Type | Description |
 |-------|------|-------------|
@@ -320,6 +334,8 @@ The orchestrator manages 13 states:
 | `story_in_progress` | Auto | Implementing a story |
 | `story_awaiting_review` | **Human gate** | Story PR open |
 | `feedback_incorporation` | Auto | Incorporating review feedback |
+| `testing_in_progress` | Auto | Running the thorough validation pass and fixing defects |
+| `testing_awaiting_approval` | **Human gate** | Testing PR open |
 | `documentation_in_progress` | Auto | Writing docs + archiving artifacts |
 | `documentation_awaiting_approval` | **Human gate** | Docs PR open |
 | `blocked` | **Human gate** | Needs manual intervention |
@@ -337,6 +353,7 @@ main                                    ← never touched during development
     ├── sdlc-<project>-plan             → PR → worktree/<project>
     ├── sdlc-<project>-story-001        → PR → worktree/<project>
     ├── sdlc-<project>-story-002        → PR → worktree/<project>
+    ├── sdlc-<project>-testing          → PR → worktree/<project>
     └── sdlc-<project>-docs             → PR → worktree/<project>
 
 When all phases are done:
@@ -361,12 +378,15 @@ my-project/
 ├── docs/
 │   └── sdlc/
 │       ├── <project>-requirements.md # Working artifact (on phase branch)
+│       ├── <project>-test-cases.md
 │       ├── <project>-design.md
 │       ├── <project>-plan.md
 │       └── <project>/                # Archived to main after docs phase
 │           ├── requirements.md
+│           ├── test-cases.md
 │           ├── design.md
 │           ├── plan.md
+│           ├── test-results.md
 │           └── README.md
 ├── .sdlc/                            # Orchestration state (gitignored)
 │   ├── spec.yaml
