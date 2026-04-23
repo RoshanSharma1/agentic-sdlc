@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ from urllib.parse import quote
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
+from sdlc_orchestrator import __version__
 from sdlc_orchestrator.state_machine import Phase, Status, WorkflowState
 from sdlc_orchestrator.memory import MemoryManager
 from sdlc_orchestrator.utils import get_active_project, sdlc_home
@@ -28,6 +30,21 @@ _chat_lock = threading.Lock()
 _jobs: dict[str, dict] = {}
 _jobs_dir: Path = Path.home() / ".sdlc" / "chat-jobs"
 _jobs_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _runtime_meta() -> dict[str, str]:
+    package_file = Path(inspect.getfile(__import__("sdlc_orchestrator"))).resolve()
+    package_root = package_file.parent
+    dashboard_file = (Path(__file__).parent / "dashboard.html").resolve()
+    source_mode = "installed" if "site-packages" in package_root.parts else "repo"
+    return {
+        "version": __version__,
+        "source_mode": source_mode,
+        "package_root": str(package_root),
+        "server_file": str(Path(__file__).resolve()),
+        "dashboard_file": str(dashboard_file),
+        "project_dir": str(_project_dir.resolve()),
+    }
 
 
 def _job_path(job_id: str) -> Path:
@@ -70,6 +87,11 @@ def fs_browse(path: str = "~"):
         p = p.parent
     dirs = sorted([d.name for d in p.iterdir() if d.is_dir() and not d.name.startswith('.')], key=str.lower)
     return {"path": str(p), "parent": str(p.parent), "dirs": dirs}
+
+
+@app.get("/api/meta")
+def runtime_meta():
+    return _runtime_meta()
 
 
 # ── Chat CWD ──────────────────────────────────────────────────────────────────
@@ -322,21 +344,21 @@ def chat_poll(job_id: str, offset: int = 0):
 
 PHASES = [p.value for p in Phase if p != Phase.DONE]
 PHASE_ARTIFACT_KEYS: dict[str, list[str]] = {
-    Phase.REQUIREMENT.value: ["requirements", "requirement_questions"],
+    Phase.REQUIREMENT.value: ["requirements", "requirement_questions", "test_spec"],
     Phase.DESIGN.value: ["design"],
     Phase.PLANNING.value: ["plan"],
-    Phase.TESTING.value: ["test_results", "test_report"],
+    Phase.TESTING.value: ["test_cases", "test_results"],
     Phase.DOCUMENTATION.value: ["documentation", "docs", "review_summary"],
 }
-TESTING_ARTIFACT_KEYS = ["test_cases", "test_results", "test_report"]
+TESTING_ARTIFACT_KEYS = ["test_cases", "test_results"]
 ARTIFACT_LABELS: dict[str, str] = {
     "requirement_questions": "Questions",
     "requirements": "Requirements",
+    "test_spec": "Test spec",
     "design": "Design",
     "plan": "Plan",
     "test_cases": "Test cases",
     "test_results": "Test results",
-    "test_report": "Test report",
     "documentation": "Documentation",
     "docs": "Docs",
     "review_summary": "Review summary",
@@ -436,6 +458,10 @@ def _artifact_link(name: str, key: str) -> str:
 def _artifact_group(key: str) -> str:
     if key in TESTING_ARTIFACT_KEYS:
         return "testing"
+    return _artifact_phase(key)
+
+
+def _artifact_phase(key: str) -> str:
     for phase_key, keys in PHASE_ARTIFACT_KEYS.items():
         if key in keys:
             return phase_key
@@ -514,17 +540,22 @@ def _project_data(project_dir: Path, name: str) -> dict[str, Any]:
     # the dashboard so archived or not-yet-merged artifacts still work.
     artifact_links: dict[str, str] = {}
     artifact_items: list[dict[str, str]] = []
+    phase_artifacts: dict[str, list[dict[str, str]]] = {phase: [] for phase in PHASES}
     for art_key, path in wf.artifacts.items():
         if not path:
             continue
         url = _artifact_link(name, art_key)
         artifact_links[art_key] = url
-        artifact_items.append({
+        item = {
             "key": art_key,
             "label": _artifact_label(art_key),
             "group": _artifact_group(art_key),
+            "phase": _artifact_phase(art_key),
             "url": url,
-        })
+        }
+        artifact_items.append(item)
+        if item["phase"] in phase_artifacts:
+            phase_artifacts[item["phase"]].append(item)
     for phase_key, keys in PHASE_ARTIFACT_KEYS.items():
         for art_key in keys:
             if wf.artifacts.get(art_key):
@@ -598,6 +629,7 @@ def _project_data(project_dir: Path, name: str) -> dict[str, Any]:
             "status": ph_status,
             "pr_url": pr_links.get(p),
             "artifact_url": artifact_links.get(p),
+            "artifact_items": phase_artifacts.get(p, []),
             "commit_urls": commit_links.get(p, []),
             "stories": stories,
         }
@@ -706,7 +738,7 @@ def get_state_json(name: str):
 
 
 @app.get("/api/projects/{name}/artifact/{key}")
-def get_artifact(name: str, key: str):
+def get_artifact(name: str, key: str, raw: bool = False):
     wf_dir = _resolve_project_dir(name)
     wf = WorkflowState(wf_dir)
     raw_path = wf.artifacts.get(key)
@@ -715,13 +747,56 @@ def get_artifact(name: str, key: str):
     if isinstance(raw_path, str) and raw_path.startswith(("http://", "https://")):
         return RedirectResponse(raw_path)
     artifact = _artifact_path(wf_dir, raw_path)
-    if artifact:
+
+    # Read content
+    if artifact and artifact.exists() and artifact.is_file():
         safe_path = _safe_state_file(wf_dir, artifact)
-        return PlainTextResponse(
-            safe_path.read_text(errors="replace"),
-            media_type="text/markdown; charset=utf-8",
-        )
-    return PlainTextResponse(str(raw_path), media_type="text/plain; charset=utf-8")
+        content = safe_path.read_text(errors="replace")
+        artifact_found = True
+    else:
+        # Artifact file not found - create helpful error message
+        content = f"""# Artifact Not Found
+
+The artifact **{_artifact_label(key)}** is referenced but the file could not be found.
+
+**Expected path:** `{raw_path}`
+
+**Searched locations:**
+- `{wf_dir / raw_path}` (relative to project)
+- `{sdlc_home(wf_dir) / raw_path}` (relative to .sdlc)
+- `{sdlc_home(wf_dir) / "workflow" / "artifacts" / raw_path}` (in artifacts folder)
+
+The file may not have been created yet, or the path may be incorrect in the workflow state.
+"""
+        artifact_found = False
+
+    # Return raw content if requested
+    if raw:
+        return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
+
+    # Render with beautiful HTML viewer
+    template_path = Path(__file__).parent / "artifact_viewer.html"
+    if not template_path.exists():
+        # Fallback to plain text if template not found
+        return PlainTextResponse(content, media_type="text/markdown; charset=utf-8")
+
+    html_template = template_path.read_text()
+
+    # Determine artifact type label
+    artifact_type = _artifact_label(key)
+    if not artifact_found:
+        artifact_type = f"{artifact_type} (Not Found)"
+
+    # Replace placeholders
+    html = html_template.replace("{{TITLE}}", f"{artifact_type}")
+    html = html.replace("{{TYPE}}", key.upper())
+
+    # Escape content for safe HTML embedding
+    import html as html_module
+    escaped_content = html_module.escape(content)
+    html = html.replace("{{CONTENT}}", escaped_content)
+
+    return HTMLResponse(html)
 
 
 @app.post("/api/projects/{name}/approve")
@@ -793,6 +868,136 @@ def get_history(name: str):
         return {"history": wf._data.get("history", [])}
     except Exception:
         return {"history": []}
+
+
+@app.get("/api/projects/{name}/evidence")
+def get_evidence_index(name: str):
+    """List all evidence files for a project."""
+    import json as _json
+    from sdlc_orchestrator.utils import project_slug as _slug
+
+    wf_dir = _resolve_project_dir(name)
+    slug = _slug(wf_dir)
+
+    # Try to find evidence directory in multiple locations
+    evidence_candidates = [
+        wf_dir / "docs" / "sdlc" / slug / "evidence",
+        sdlc_home(wf_dir) / "docs" / "sdlc" / slug / "evidence",
+    ]
+    for root in _global_repo_roots():
+        evidence_candidates.append(root / "docs" / "sdlc" / slug / "evidence")
+
+    evidence_dir = None
+    for candidate in evidence_candidates:
+        if candidate.exists() and candidate.is_dir():
+            evidence_dir = candidate
+            break
+
+    if not evidence_dir:
+        return {"evidence": [], "evidence_dir": None}
+
+    # Try to load index.json if it exists
+    index_file = evidence_dir / "index.json"
+    if index_file.exists():
+        try:
+            evidence_index = _json.loads(index_file.read_text())
+            return {"evidence": evidence_index, "evidence_dir": str(evidence_dir)}
+        except Exception:
+            pass
+
+    # Fallback: scan directory and build index
+    evidence_files = []
+    for evidence_file in sorted(evidence_dir.glob("*")):
+        if evidence_file.name == "index.json":
+            continue
+        if not evidence_file.is_file():
+            continue
+
+        file_type = "unknown"
+        if evidence_file.suffix == ".json":
+            file_type = "api_response" if "response" in evidence_file.name else "metrics"
+        elif evidence_file.suffix in (".png", ".jpg", ".jpeg", ".gif"):
+            file_type = "screenshot"
+        elif evidence_file.suffix == ".txt":
+            file_type = "logs"
+        elif evidence_file.suffix == ".html":
+            file_type = "report"
+
+        # Extract test_id from filename (TC-XXX)
+        test_id = None
+        if evidence_file.name.startswith("TC-"):
+            parts = evidence_file.name.split("-")
+            if len(parts) >= 2:
+                test_id = f"{parts[0]}-{parts[1]}"
+
+        evidence_files.append({
+            "file": evidence_file.name,
+            "test_id": test_id,
+            "type": file_type,
+            "size": evidence_file.stat().st_size,
+        })
+
+    return {"evidence": evidence_files, "evidence_dir": str(evidence_dir)}
+
+
+@app.get("/api/projects/{name}/evidence/{filename}")
+def get_evidence_file(name: str, filename: str):
+    """Retrieve a specific evidence file."""
+    from sdlc_orchestrator.utils import project_slug as _slug
+    import json as _json
+
+    wf_dir = _resolve_project_dir(name)
+    slug = _slug(wf_dir)
+
+    # Find evidence directory
+    evidence_candidates = [
+        wf_dir / "docs" / "sdlc" / slug / "evidence",
+        sdlc_home(wf_dir) / "docs" / "sdlc" / slug / "evidence",
+    ]
+    for root in _global_repo_roots():
+        evidence_candidates.append(root / "docs" / "sdlc" / slug / "evidence")
+
+    evidence_file = None
+    for candidate_dir in evidence_candidates:
+        candidate_file = candidate_dir / filename
+        if candidate_file.exists() and candidate_file.is_file():
+            evidence_file = candidate_file
+            break
+
+    if not evidence_file:
+        raise HTTPException(404, f"Evidence file not found: {filename}")
+
+    # Security check: ensure file is within evidence directory
+    try:
+        resolved = evidence_file.resolve()
+        if not any(c.resolve() in resolved.parents for c in evidence_candidates if c.exists()):
+            raise HTTPException(403, "Access denied")
+    except Exception:
+        raise HTTPException(403, "Access denied")
+
+    # Determine content type and return appropriate response
+    suffix = evidence_file.suffix.lower()
+
+    if suffix == ".json":
+        content = evidence_file.read_text()
+        return PlainTextResponse(content, media_type="application/json")
+
+    elif suffix in (".png", ".jpg", ".jpeg", ".gif"):
+        import mimetypes
+        mime_type = mimetypes.guess_type(str(evidence_file))[0] or "image/png"
+        return StreamingResponse(
+            open(evidence_file, "rb"),
+            media_type=mime_type,
+            headers={"Content-Disposition": f'inline; filename="{filename}"'}
+        )
+
+    elif suffix == ".html":
+        content = evidence_file.read_text()
+        return HTMLResponse(content)
+
+    else:  # .txt and others
+        content = evidence_file.read_text(errors="replace")
+        return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
 
 
 @app.get("/api/projects/{name}/status")

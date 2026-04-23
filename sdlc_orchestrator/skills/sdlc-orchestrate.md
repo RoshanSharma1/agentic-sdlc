@@ -117,10 +117,10 @@ reviewable via PR, and persistent outside the local machine.
 
 | Phase | Branch | Artifact file |
 |-------|--------|---------------|
-| requirement | `sdlc-$PROJECT-requirements` | `docs/sdlc/$PROJECT/requirements.md`, `docs/sdlc/$PROJECT/test-cases.md` |
+| requirement | `sdlc-$PROJECT-requirements` | `docs/sdlc/$PROJECT/requirements.md` |
 | design | `sdlc-$PROJECT-design` | `docs/sdlc/$PROJECT/design.md` |
 | planning | `sdlc-$PROJECT-plan` | `docs/sdlc/$PROJECT/plan.md` |
-| testing | `sdlc-$PROJECT-testing` | `docs/sdlc/$PROJECT/test-results.md` |
+| testing | `sdlc-$PROJECT-testing` | `docs/sdlc/$PROJECT/test-cases.md`, `docs/sdlc/$PROJECT/test-results.md` |
 | implementation | `sdlc/implementation` | (code) |
 
 ---
@@ -277,18 +277,16 @@ Also read the agent context file
    - Success metrics / definition of done
    - If spec is sparse, include a section "**Open questions for review**" listing
      anything ambiguous — the human can answer in PR comments
-4. Also write `docs/sdlc/$PROJECT/test-cases.md` as the acceptance-test source of truth:
-   - `TC-XXX` identifier
-   - linked requirement(s)
-   - scenario
-   - type (`api`, `ui`, `integration`, `performance`, `manual`)
-   - expected result
-   - evidence to capture (`response`, `screenshot`, `log`, etc.)
+4. Include a `## Test Strategy` section inside `docs/sdlc/$PROJECT/requirements.md` covering:
+   - scope in and out of test
+   - target environments and prerequisites
+   - requirement-to-test traceability approach
+   - evidence expectations by test type
+   - major risks, assumptions, and manual verification needs
 5. Record artifact paths and commit:
    ```bash
    sdlc artifact set requirements docs/sdlc/$PROJECT/requirements.md
-   sdlc artifact set test_cases docs/sdlc/$PROJECT/test-cases.md
-   git add docs/sdlc/$PROJECT/requirements.md docs/sdlc/$PROJECT/test-cases.md
+   git add docs/sdlc/$PROJECT/requirements.md
    git commit -m "sdlc(requirement): draft requirements"
    git push -u origin sdlc-$PROJECT-requirements
    ```
@@ -321,7 +319,7 @@ sdlc github ingest-feedback sdlc-$PROJECT-requirements requirement
 ```
 
 - **approved or merged** → apply any feedback from `.sdlc/feedback/requirement.md`
-  to `docs/sdlc/$PROJECT/requirements.md` and `docs/sdlc/$PROJECT/test-cases.md`, commit and push, then **merge the PR and update base**:
+  to `docs/sdlc/$PROJECT/requirements.md`, commit and push, then **merge the PR and update base**:
   ```bash
   gh pr merge sdlc-$PROJECT-requirements --merge --body ""
   git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
@@ -329,7 +327,7 @@ sdlc github ingest-feedback sdlc-$PROJECT-requirements requirement
   ```
 
 - **open** → check `.sdlc/feedback/requirement.md` for new comments.
-  If new comments exist: update `docs/sdlc/$PROJECT/requirements.md` and `docs/sdlc/$PROJECT/test-cases.md`, commit and push, stop.
+  If new comments exist: update `docs/sdlc/$PROJECT/requirements.md`, commit and push, stop.
   If no new comments: remind the human to review the PR and stop.
 
 ---
@@ -396,7 +394,7 @@ You are a Project Manager. Read `docs/sdlc/$PROJECT/design.md` and `docs/sdlc/$P
    git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
    git checkout -b sdlc-$PROJECT-plan 2>/dev/null || git checkout sdlc-$PROJECT-plan
    ```
-2. Write `docs/sdlc/$PROJECT/plan.md` — stories grouping tasks. The plan must explicitly reference the coverage already defined in `docs/sdlc/$PROJECT/test-cases.md`:
+2. Write `docs/sdlc/$PROJECT/plan.md` — stories grouping tasks. The plan must explicitly reference the test strategy already defined in `docs/sdlc/$PROJECT/requirements.md`:
 
    **Rule: every phase must have at least one STORY-NNN, and every story gets its own PR.**
    Structure stories by phase:
@@ -540,33 +538,43 @@ You are a QA Engineer. All implementation stories are merged into `$BASE_BRANCH`
 
 1. Read:
    - `docs/sdlc/$PROJECT/requirements.md`
-   - `docs/sdlc/$PROJECT/test-cases.md`
    - `docs/sdlc/$PROJECT/plan.md`
 2. Checkout the testing branch from the latest base:
    ```bash
    git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH
    git checkout -b sdlc-$PROJECT-testing 2>/dev/null || git checkout sdlc-$PROJECT-testing
    ```
-3. Execute the full validation pass:
+3. Create `docs/sdlc/$PROJECT/evidence/` if needed.
+4. Draft `docs/sdlc/$PROJECT/test-cases.md` for this project from the requirements, test strategy section, and implementation plan:
+   - `TC-XXX` identifier
+   - linked requirement(s)
+   - scenario
+   - type (`api`, `ui`, `integration`, `performance`, `manual`)
+   - expected result
+   - evidence to capture
+5. Execute the full validation pass:
    - run all automated tests
    - run linting and type checks
    - exercise each testcase from `test-cases.md`
-   - capture evidence for each testcase (`response`, `screenshot`, `log`, etc.)
-4. If a testcase fails, fix the product code on this branch, rerun the affected checks, and keep iterating until the issue is resolved or you have 3 failed attempts on the same blocker.
-5. Write `docs/sdlc/$PROJECT/test-results.md` with:
+   - capture evidence for each testcase under `docs/sdlc/$PROJECT/evidence/` (`api-response-*.json`, `screenshot-*.png`, `log-*.txt`, etc.)
+6. If a testcase fails, fix the product code on this branch, rerun the affected checks, and keep iterating until the issue is resolved or you have 3 failed attempts on the same blocker.
+7. Write `docs/sdlc/$PROJECT/test-results.md` with:
    - summary of the validation run
    - requirement-to-testcase coverage
-   - testcase execution table with evidence references
+   - testcase execution table with markdown links to the captured API response and screenshot evidence files
+   - release recommendation (`pass`, `pass with caveats`, or `blocked`)
+   - key risks or caveats
    - any remaining blockers
-6. Record the artifact path and commit:
+8. Record the artifact paths and commit:
    ```bash
+   sdlc artifact set test_cases docs/sdlc/$PROJECT/test-cases.md
    sdlc artifact set test_results docs/sdlc/$PROJECT/test-results.md
-   git add docs/sdlc/$PROJECT/test-results.md
+   git add docs/sdlc/$PROJECT/test-cases.md docs/sdlc/$PROJECT/test-results.md docs/sdlc/$PROJECT/evidence/
    git add <any code fixes from testing>
    git commit -m "sdlc(testing): validate release candidate"
    git push -u origin sdlc-$PROJECT-testing
    ```
-7. Open PR and set approval gate:
+9. Open PR and set approval gate:
    ```bash
    sdlc github create-pr sdlc-$PROJECT-testing testing
    sdlc state set testing_awaiting_approval
@@ -580,7 +588,7 @@ sdlc github ingest-feedback sdlc-$PROJECT-testing testing
 ```
 
 - **approved or merged** → apply any feedback from `.sdlc/feedback/testing.md`
-  to `docs/sdlc/$PROJECT/test-results.md` and any required code fixes, rerun the relevant checks, then **merge the PR and update base**:
+  to `docs/sdlc/$PROJECT/test-cases.md`, `docs/sdlc/$PROJECT/test-results.md`, and any required code fixes, rerun the relevant checks, then **merge the PR and update base**:
   ```bash
   gh pr merge sdlc-$PROJECT-testing --merge --body ""
   git checkout $BASE_BRANCH && git pull origin $BASE_BRANCH

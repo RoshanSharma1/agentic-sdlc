@@ -23,13 +23,17 @@ Format each question exactly like this so the human can fill in answers:
 Focus on questions that would change the architecture or scope if answered differently.
 Do not ask about things already clearly stated in spec.yaml.
 
-Also draft `workflow/artifacts/test_cases.md` as an initial acceptance-test matrix derived from the current spec. For each likely requirement, include:
+Also draft `workflow/artifacts/requirements.md` as a project-specific requirements document covering:
 
-- `TC-XXX` identifier
-- linked requirement or goal
-- scenario summary
-- type (`api`, `ui`, `integration`, `performance`, or `manual`)
-- expected result
-- evidence to capture (`response`, `screenshot`, `log`, etc.)
+- goals and non-goals
+- functional requirements with acceptance criteria
+- non-functional constraints
+- assumptions and open questions
+- a `## Test Strategy` section with:
+  - scope in and out of test
+  - target environments and prerequisites
+  - requirement-to-test traceability approach
+  - evidence expectations per test type
+  - major risks, assumptions, and manual verification needs
 
 When the file is written, output exactly: PHASE_COMPLETE: requirement-discovery

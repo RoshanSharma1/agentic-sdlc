@@ -2,8 +2,8 @@
 
 You are setting up a new project for autonomous SDLC orchestration. This is a
 one-time, interactive skill. Your job is to understand the project deeply, ask
-smart clarifying questions, and produce a complete `.sdlc/spec.yaml`, an
-initial `requirements.md`, and initial `test_cases.md` coverage — so that `/sdlc-orchestrate` can run unattended
+smart clarifying questions, and produce a complete `.sdlc/spec.yaml` and
+initial `requirements.md` with embedded test strategy — so that `/sdlc-orchestrate` can run unattended
 from here.
 
 ---
@@ -105,9 +105,9 @@ requirement, design, and planning phases. It is idempotent — safe to re-run.
 
 Invoke the `sdlc-requirement` skill. It will read `spec.yaml`, generate
 clarifying questions in `.sdlc/workflow/artifacts/requirement_questions.md`,
-and produce initial `requirements.md` and `test_cases.md`.
+and produce initial `requirements.md`.
 
-Wait for it to finish, then check that `requirements.md` and `test_cases.md` exist and are
+Wait for it to finish, then check that `requirements.md` exists and is
 non-empty.
 
 ---
@@ -123,7 +123,6 @@ Then tell the developer:
 
 ```
 ✓ Requirements drafted at .sdlc/workflow/artifacts/requirements.md
-✓ Initial test cases drafted at .sdlc/workflow/artifacts/test_cases.md
 
 Review those files. Edit them if anything is wrong or missing.
 

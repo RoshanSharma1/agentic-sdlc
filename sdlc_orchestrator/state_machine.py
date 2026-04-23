@@ -21,7 +21,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional
 
-from sdlc_orchestrator.utils import sdlc_home
+from sdlc_orchestrator.utils import project_slug, sdlc_home
 
 
 class Phase(str, Enum):
@@ -114,6 +114,7 @@ _LEGACY_MAP: dict[str, tuple[Phase | None, Status]] = {
 # Keep these names importable for callers that reference them
 APPROVAL_STATES = frozenset()   # use wf.is_approval_gate() instead
 EXECUTABLE_STATES = frozenset() # use wf.is_executable() instead
+PROJECT_SCOPED_ARTIFACT_KEYS = frozenset({"test_spec"})
 
 
 class WorkflowState:
@@ -134,6 +135,7 @@ class WorkflowState:
         if self.path.exists():
             data = json.loads(self.path.read_text())
             self._migrate(data)
+            _normalize_artifacts(self.project_dir, data)
             return data
         return self._defaults()
 
@@ -190,9 +192,17 @@ class WorkflowState:
 
         # Ensure all phases have a stories dict
         phases = data.setdefault("phases", _default_phases())
+        current_phase = _coerce_phase(data.get("phase"))
+        current_status = _coerce_status(data.get("status"))
+        _backfill_phases(phases, current_phase, current_status, data)
         for p in PHASE_ORDER:
             phase_entry = phases.setdefault(p.value, {"status": Status.PENDING.value})
             phase_entry.setdefault("stories", {} if p != Phase.IMPLEMENTATION else phase_entry.get("stories", {}))
+
+        # Ensure legacy state files gain newly introduced artifact keys.
+        artifacts = data.setdefault("artifacts", {})
+        for key, default in WorkflowState._defaults()["artifacts"].items():
+            artifacts.setdefault(key, default)
 
         # Migrate old github.story_items / task_items into phase stories
         old_story_items = data.get("github", {}).pop("story_items", None) or {}
@@ -217,11 +227,11 @@ class WorkflowState:
             "artifacts": {
                 "requirement_questions": None,
                 "requirements": None,
+                "test_spec": None,
                 "test_cases": None,
                 "design": None,
                 "plan": None,
                 "test_results": None,
-                "test_report": None,
                 "review_summary": None,
             },
             "history": [],
@@ -455,7 +465,8 @@ class WorkflowState:
         self.save()
 
     def mark_artifact(self, key: str, path: str) -> None:
-        self._data.setdefault("artifacts", {})[key] = path
+        normalized = _normalize_artifact_path(self.project_dir, key, path)
+        self._data.setdefault("artifacts", {})[key] = normalized
         self.save()
 
     def set_story_item(self, story_id: str, github_issue: int,
@@ -595,3 +606,52 @@ def _backfill_phases(phases: dict, current_phase: Optional[Phase],
             phases.setdefault(p.value, {})["status"] = current_status.value
             break
         phases.setdefault(p.value, {})["status"] = Status.DONE.value
+
+
+def _coerce_phase(value: str | None) -> Optional[Phase]:
+    if not value:
+        return None
+    try:
+        return Phase(value)
+    except ValueError:
+        return None
+
+
+def _coerce_status(value: str | None) -> Status:
+    if not value:
+        return Status.IN_PROGRESS
+    try:
+        return Status(value)
+    except ValueError:
+        return Status.IN_PROGRESS
+
+
+def _normalize_artifact_path(project_dir: Path, key: str, path: str) -> str:
+    raw = str(path or "").strip()
+    if not raw or key not in PROJECT_SCOPED_ARTIFACT_KEYS:
+        return raw
+
+    artifact_path = Path(raw)
+    normalized = artifact_path.as_posix()
+    if artifact_path.is_absolute():
+        return raw
+    if normalized.startswith(".sdlc/") or normalized.startswith("workflow/"):
+        return normalized
+
+    slug = project_slug(project_dir)
+    project_prefix = f"docs/sdlc/{slug}/"
+    if normalized.startswith(project_prefix):
+        return normalized
+
+    filename = artifact_path.name or raw.rsplit("/", 1)[-1]
+    if normalized.startswith("docs/sdlc/"):
+        return f"{project_prefix}{filename}"
+    if "/" not in normalized:
+        return f"{project_prefix}{filename}"
+    return normalized
+
+
+def _normalize_artifacts(project_dir: Path, data: dict) -> None:
+    artifacts = data.setdefault("artifacts", {})
+    for key, raw in list(artifacts.items()):
+        artifacts[key] = _normalize_artifact_path(project_dir, key, raw)

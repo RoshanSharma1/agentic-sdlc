@@ -11,6 +11,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
 header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; max-width: 1400px; margin-left: auto; margin-right: auto; }
 h1 { font-size: 1.3rem; font-weight: 700; color: #f8fafc; }
 #timer { font-size: 0.72rem; color: #475569; }
+.runtime-banner { max-width: 1400px; margin: -10px auto 18px; padding: 8px 12px; border: 1px solid #2d3748; border-radius: 10px; background: #161b27; color: #94a3b8; font-size: 0.68rem; line-height: 1.5; word-break: break-all; }
+.runtime-banner strong { color: #e2e8f0; }
+.runtime-banner .runtime-mode { display: inline-block; margin-right: 8px; padding: 1px 7px; border-radius: 999px; font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.runtime-banner .runtime-mode.repo { background: #14291f; color: #4ade80; }
+.runtime-banner .runtime-mode.installed { background: #3b2a1a; color: #fbbf24; }
 
 .projects { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; max-width: 1400px; margin: 0 auto; }
 
@@ -159,6 +164,33 @@ h1 { font-size: 1.3rem; font-weight: 700; color: #f8fafc; }
 .fb-cancel { background: #1e2535; color: #64748b; border: 1px solid #2d3748; border-radius: 10px; padding: 9px 14px; font-size: 0.76rem; cursor: pointer; }
 
 .toast { position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%); padding: 10px 20px; border-radius: 20px; font-size: 0.78rem; font-weight: 500; display: none; z-index: 300; white-space: nowrap; }
+
+/* ── Evidence Viewer ── */
+.evidence-overlay { position: fixed; inset: 0; background: #00000088; display: none; align-items: center; justify-content: center; z-index: 250; }
+.evidence-overlay.open { display: flex; }
+.evidence-modal { width: 90%; max-width: 900px; height: 85vh; max-height: 800px; background: #13161f; border: 1px solid #2d3748; border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 24px 80px #000000cc; }
+.evidence-header { display: flex; align-items: center; gap: 12px; padding: 14px 18px; background: linear-gradient(135deg,#1a1f2e,#1e2535); border-bottom: 1px solid #2d3748; }
+.evidence-title { flex: 1; font-size: 0.95rem; font-weight: 600; color: #f1f5f9; }
+.evidence-close { background: #2d3748; border: none; color: #94a3b8; width: 30px; height: 30px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.9rem; transition: background .15s; }
+.evidence-close:hover { background: #3b4758; color: #e2e8f0; }
+.evidence-body { display: flex; flex: 1; overflow: hidden; }
+.evidence-sidebar { width: 240px; background: #161b27; border-right: 1px solid #2d3748; overflow-y: auto; padding: 12px 8px; }
+.evidence-sidebar::-webkit-scrollbar { width: 4px; }
+.evidence-sidebar::-webkit-scrollbar-thumb { background: #2d3748; border-radius: 2px; }
+.evidence-item { padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 0.7rem; color: #94a3b8; transition: background .12s; margin-bottom: 3px; word-break: break-all; }
+.evidence-item:hover { background: #1e2535; color: #e2e8f0; }
+.evidence-item.active { background: #1e3a5f; color: #93c5fd; font-weight: 600; }
+.evidence-item-type { display: inline-block; font-size: 0.6rem; padding: 1px 5px; border-radius: 4px; background: #2d3748; color: #64748b; margin-right: 5px; }
+.evidence-item-type.screenshot { background: #4c1d95; color: #a78bfa; }
+.evidence-item-type.api_response { background: #1e3a5f; color: #60a5fa; }
+.evidence-item-type.logs { background: #92400e; color: #fbbf24; }
+.evidence-item-type.metrics { background: #14532d; color: #4ade80; }
+.evidence-content { flex: 1; overflow-y: auto; padding: 18px; background: #0f1117; }
+.evidence-content::-webkit-scrollbar { width: 6px; }
+.evidence-content::-webkit-scrollbar-thumb { background: #2d3748; border-radius: 3px; }
+.evidence-content pre { background: #161b27; border: 1px solid #2d3748; border-radius: 8px; padding: 14px; overflow-x: auto; font-size: 0.72rem; line-height: 1.6; color: #e2e8f0; }
+.evidence-content img { max-width: 100%; border-radius: 8px; border: 1px solid #2d3748; }
+.evidence-empty { color: #64748b; text-align: center; padding: 60px 20px; font-size: 0.85rem; }
 </style>
 </head>
 <body>
@@ -166,6 +198,7 @@ h1 { font-size: 1.3rem; font-weight: 700; color: #f8fafc; }
   <h1>⚙ SDLC</h1>
   <span id="timer"></span>
 </header>
+<div class="runtime-banner" id="runtime-banner">Loading runtime…</div>
 <div class="projects" id="projects"><p style="color:#475569;text-align:center;padding:40px 0">Loading…</p></div>
 
 <!-- Chat overlay -->
@@ -208,6 +241,25 @@ h1 { font-size: 1.3rem; font-weight: 700; color: #f8fafc; }
   </div>
 </div>
 <button class="chat-fab" id="chat-fab" onclick="toggleChat()">💬</button>
+
+<!-- Evidence Viewer -->
+<div class="evidence-overlay" id="evidence-overlay" onclick="closeEvidence(event)">
+  <div class="evidence-modal" onclick="event.stopPropagation()">
+    <div class="evidence-header">
+      <span class="evidence-title" id="evidence-title">Test Evidence</span>
+      <button class="evidence-close" onclick="closeEvidence()">✕</button>
+    </div>
+    <div class="evidence-body">
+      <div class="evidence-sidebar" id="evidence-sidebar">
+        <div class="evidence-empty">No evidence files</div>
+      </div>
+      <div class="evidence-content" id="evidence-content">
+        <div class="evidence-empty">Select an evidence file to view</div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -216,6 +268,21 @@ let expanded = {};
 let expandedClosed = {};
 
 const PHASE_LABELS = { requirement:'Requirements', design:'Design', planning:'Planning', implementation:'Implementation', testing:'Testing', documentation:'Documentation' };
+
+function escapeHtml(value) {
+  return String(value || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function loadRuntimeMeta() {
+  const el = document.getElementById('runtime-banner');
+  try {
+    const meta = await (await fetch('/api/meta',{headers:{'ngrok-skip-browser-warning':'1'}})).json();
+    const mode = meta.source_mode || 'unknown';
+    el.innerHTML = `<span class="runtime-mode ${escapeHtml(mode)}">${escapeHtml(mode)}</span><strong>v${escapeHtml(meta.version)}</strong> <span style="color:#64748b">serving from</span> ${escapeHtml(meta.package_root)}`;
+  } catch (e) {
+    el.textContent = 'Runtime metadata unavailable';
+  }
+}
 
 function stateClass(p) {
   if (p.phase === 'done') return 'state-done';
@@ -269,10 +336,17 @@ function renderProject(p) {
     const pOpen = !!expanded[pkey];
     if (!pOpen) return '';
     const phStories = ph.stories || [];
+    const phArtifacts = ph.artifact_items || [];
     const prHref = ph.pr_url || pr[ph.name] || '';
-    const artHref = ph.artifact_url || artLinks[ph.name] || '';
     const prLink = prHref ? linkChip(prHref, prLabel(prHref), '', 'Open pull request') : '';
-    const artLink = artHref ? linkChip(artHref, '📄 artifact', 'artifact', 'Open artifact') : '';
+    const fallbackArtHref = ph.artifact_url || artLinks[ph.name] || '';
+    let artifactLinks = phArtifacts.length
+      ? phArtifacts.map(item => linkChip(item.url, item.label, 'artifact', `Open ${item.label}`)).join('')
+      : (fallbackArtHref ? linkChip(fallbackArtHref, '📄 artifact', 'artifact', 'Open artifact') : '');
+    // Add Evidence button for testing phase
+    if (ph.name === 'testing' && (phArtifacts.length > 0 || fallbackArtHref)) {
+      artifactLinks += `<a class="link-chip artifact" onclick="event.stopPropagation();openEvidence('${escapeAttr(p.name)}')" style="cursor:pointer" title="View test evidence (screenshots, API responses, logs)">🔍 Evidence</a>`;
+    }
     const phCommitLinks = commitLinks(ph.commit_urls || commits[ph.name] || []);
     const storyRows = phStories.map(s => {
       const skey = `${p.name}::${s.id}`;
@@ -303,10 +377,10 @@ function renderProject(p) {
         </div>`;
     }).join('');
     return `<div class="seg-detail open" style="margin-bottom:6px">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:${phStories.length?'8px':'0'}">
+      <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:${phStories.length?'8px':'0'}">
         <span style="font-size:0.75rem;font-weight:600;color:${ph.status==='done'?'#4ade80':ph.status==='active'?'#60a5fa':'#475569'}">${PHASE_LABELS[ph.name]||ph.name}</span>
         ${prLink}
-        ${artLink}
+        ${artifactLinks}
         ${phCommitLinks}
       </div>
       ${storyRows}
@@ -495,6 +569,7 @@ function toast(msg,ok=true) {
 let countdown=30;
 setInterval(()=>{ document.getElementById('timer').textContent=`↻ ${countdown}s`; if(--countdown<0){countdown=30;load();} },1000);
 document.getElementById('timer').textContent='↻ 30s';
+loadRuntimeMeta();
 load();
 </script>
 
@@ -573,6 +648,94 @@ async function fbSelect() {
     const d = await r.json();
     if (r.ok) { document.getElementById('chat-cwd-label').textContent='📁 '+d.cwd; closeFolderBrowser(); toast('Directory set ✓'); }
   } catch(e) { toast('Error',false); }
+}
+
+// ── Evidence Viewer ───────────────────────────────────────────────────────
+let currentProject = '';
+
+async function openEvidence(projectName) {
+  currentProject = projectName;
+  const overlay = document.getElementById('evidence-overlay');
+  const sidebar = document.getElementById('evidence-sidebar');
+  const content = document.getElementById('evidence-content');
+
+  overlay.classList.add('open');
+  document.getElementById('evidence-title').textContent = `Test Evidence: ${projectName}`;
+
+  sidebar.innerHTML = '<div class="evidence-empty">Loading...</div>';
+  content.innerHTML = '<div class="evidence-empty">Select an evidence file to view</div>';
+
+  try {
+    const r = await fetch(`/api/projects/${encodeURIComponent(projectName)}/evidence`);
+    const d = await r.json();
+
+    if (!d.evidence || d.evidence.length === 0) {
+      sidebar.innerHTML = '<div class="evidence-empty">No evidence files found</div>';
+      return;
+    }
+
+    // Group by test ID
+    const grouped = {};
+    d.evidence.forEach(item => {
+      const tid = item.test_id || 'other';
+      if (!grouped[tid]) grouped[tid] = [];
+      grouped[tid].push(item);
+    });
+
+    let html = '';
+    Object.keys(grouped).sort().forEach(tid => {
+      html += `<div style="font-size:0.65rem;font-weight:700;color:#475569;padding:8px 10px 4px;text-transform:uppercase;letter-spacing:.04em">${tid}</div>`;
+      grouped[tid].forEach(item => {
+        html += `<div class="evidence-item" onclick="viewEvidence('${item.file}', '${item.type}')">
+          <span class="evidence-item-type ${item.type}">${item.type.replace('_', ' ')}</span>
+          <div style="margin-top:3px;font-size:0.65rem">${item.file}</div>
+        </div>`;
+      });
+    });
+    sidebar.innerHTML = html;
+  } catch(e) {
+    sidebar.innerHTML = '<div class="evidence-empty">Error loading evidence</div>';
+    console.error(e);
+  }
+}
+
+async function viewEvidence(filename, type) {
+  const content = document.getElementById('evidence-content');
+  const items = document.querySelectorAll('.evidence-item');
+  items.forEach(el => el.classList.remove('active'));
+  event.currentTarget.classList.add('active');
+
+  content.innerHTML = '<div class="evidence-empty">Loading...</div>';
+
+  try {
+    const url = `/api/projects/${encodeURIComponent(currentProject)}/evidence/${encodeURIComponent(filename)}`;
+
+    if (type === 'screenshot' || filename.match(/\.(png|jpg|jpeg|gif)$/i)) {
+      content.innerHTML = `<img src="${url}" alt="${filename}">`;
+    } else if (type === 'api_response' || type === 'metrics' || filename.endsWith('.json')) {
+      const r = await fetch(url);
+      const json = await r.text();
+      const formatted = JSON.stringify(JSON.parse(json), null, 2);
+      content.innerHTML = `<pre>${escapeHtml(formatted)}</pre>`;
+    } else if (type === 'report' || filename.endsWith('.html')) {
+      const r = await fetch(url);
+      const html = await r.text();
+      content.innerHTML = html;
+    } else {
+      const r = await fetch(url);
+      const text = await r.text();
+      content.innerHTML = `<pre>${escapeHtml(text)}</pre>`;
+    }
+  } catch(e) {
+    content.innerHTML = '<div class="evidence-empty">Error loading file</div>';
+    console.error(e);
+  }
+}
+
+function closeEvidence(event) {
+  if (!event || event.target.id === 'evidence-overlay') {
+    document.getElementById('evidence-overlay').classList.remove('open');
+  }
 }
 
 // ── Chat input ────────────────────────────────────────────────────────────

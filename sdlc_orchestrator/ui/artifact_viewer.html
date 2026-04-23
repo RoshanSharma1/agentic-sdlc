@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{TITLE}}</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu", sans-serif;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #1a202c;
+  min-height: 100vh;
+  padding: 20px;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  overflow: hidden;
+}
+
+.header {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 24px 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.header-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header-icon {
+  font-size: 2rem;
+}
+
+.badge {
+  display: inline-block;
+  padding: 6px 14px;
+  background: rgba(255,255,255,0.2);
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.content {
+  padding: 32px;
+}
+
+/* Markdown rendering */
+.markdown-body {
+  font-size: 1rem;
+  line-height: 1.7;
+  color: #2d3748;
+}
+
+.markdown-body h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  margin: 32px 0 16px;
+  color: #1a202c;
+  border-bottom: 3px solid #667eea;
+  padding-bottom: 12px;
+}
+
+.markdown-body h2 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 28px 0 12px;
+  color: #2d3748;
+  border-left: 4px solid #667eea;
+  padding-left: 16px;
+}
+
+.markdown-body h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 24px 0 12px;
+  color: #4a5568;
+}
+
+.markdown-body p {
+  margin: 12px 0;
+}
+
+.markdown-body ul, .markdown-body ol {
+  margin: 12px 0;
+  padding-left: 28px;
+}
+
+.markdown-body li {
+  margin: 8px 0;
+}
+
+.markdown-body code {
+  background: #f7fafc;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 0.9em;
+  color: #e53e3e;
+  border: 1px solid #e2e8f0;
+}
+
+.markdown-body pre {
+  background: #2d3748;
+  color: #e2e8f0;
+  padding: 20px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 16px 0;
+  border: 1px solid #4a5568;
+}
+
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  border: none;
+}
+
+.markdown-body blockquote {
+  border-left: 4px solid #cbd5e0;
+  padding-left: 16px;
+  margin: 16px 0;
+  color: #718096;
+  font-style: italic;
+}
+
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.markdown-body th {
+  background: #667eea;
+  color: white;
+  padding: 12px;
+  text-align: left;
+  font-weight: 600;
+}
+
+.markdown-body td {
+  padding: 12px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.markdown-body tr:hover {
+  background: #f7fafc;
+}
+
+/* JSON/API Response Card */
+.json-card {
+  background: linear-gradient(135deg, #1a202c 0%, #2d3748 100%);
+  border-radius: 12px;
+  padding: 24px;
+  margin: 20px 0;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+  border: 1px solid #4a5568;
+}
+
+.json-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid #4a5568;
+}
+
+.json-title {
+  color: #e2e8f0;
+  font-size: 1rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.json-badge {
+  background: #48bb78;
+  color: white;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.json-content {
+  background: #1a1a1a;
+  border-radius: 8px;
+  padding: 16px;
+  overflow-x: auto;
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: #a0aec0;
+  border: 1px solid #2d3748;
+}
+
+.json-content .json-key {
+  color: #63b3ed;
+}
+
+.json-content .json-string {
+  color: #68d391;
+}
+
+.json-content .json-number {
+  color: #fbd38d;
+}
+
+.json-content .json-boolean {
+  color: #fc8181;
+}
+
+.json-content .json-null {
+  color: #cbd5e0;
+}
+
+/* Screenshot viewer */
+.screenshot-container {
+  margin: 24px 0;
+  background: #f7fafc;
+  border-radius: 12px;
+  padding: 20px;
+  border: 2px solid #e2e8f0;
+}
+
+.screenshot-header {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #2d3748;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.screenshot-img {
+  width: 100%;
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+  border: 1px solid #cbd5e0;
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+
+.screenshot-img:hover {
+  transform: scale(1.02);
+}
+
+/* Test case card */
+.test-case-card {
+  background: linear-gradient(135deg, #fff 0%, #f7fafc 100%);
+  border-radius: 12px;
+  padding: 20px;
+  margin: 16px 0;
+  border: 2px solid #e2e8f0;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}
+
+.test-case-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.test-status {
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.test-status.pass {
+  background: #c6f6d5;
+  color: #22543d;
+}
+
+.test-status.fail {
+  background: #fed7d7;
+  color: #742a2a;
+}
+
+.test-case-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #2d3748;
+  flex: 1;
+}
+
+/* Loading animation */
+.loading {
+  text-align: center;
+  padding: 60px 20px;
+  color: #718096;
+}
+
+.spinner {
+  width: 50px;
+  height: 50px;
+  border: 4px solid #e2e8f0;
+  border-top: 4px solid #667eea;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin: 0 auto 20px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Copy button */
+.copy-btn {
+  background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.2);
+  color: #e2e8f0;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: all 0.2s;
+}
+
+.copy-btn:hover {
+  background: rgba(255,255,255,0.2);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  body { padding: 0; }
+  .container { border-radius: 0; }
+  .header { padding: 20px; }
+  .content { padding: 20px; }
+  .header-title { font-size: 1.2rem; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="header-title">
+      <span class="header-icon">📄</span>
+      <span id="artifact-title">{{TITLE}}</span>
+    </div>
+    <div class="badge" id="artifact-type">{{TYPE}}</div>
+  </div>
+  <div class="content">
+    <div id="artifact-content" class="markdown-body">
+      {{CONTENT}}
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-json.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+
+<script>
+// Parse and render content based on type
+function renderContent() {
+  const contentEl = document.getElementById('artifact-content');
+  const rawContent = contentEl.textContent;
+
+  // Try to detect content type
+  let isJSON = false;
+  try {
+    JSON.parse(rawContent);
+    isJSON = true;
+  } catch(e) {}
+
+  if (isJSON) {
+    renderJSON(rawContent, contentEl);
+  } else {
+    renderMarkdown(rawContent, contentEl);
+  }
+
+  // Find and enhance images
+  enhanceImages();
+
+  // Detect and convert file path references to images
+  detectImagePaths(contentEl);
+}
+
+function detectImagePaths(container) {
+  // Look for patterns like "Screenshot: /path/to/file.png" or "Image: ./screenshot.png"
+  const walker = document.createTreeWalker(
+    container,
+    NodeFilter.SHOW_TEXT,
+    null
+  );
+
+  const nodesToReplace = [];
+  let node;
+
+  while (node = walker.nextNode()) {
+    const text = node.textContent;
+    // Match patterns like "Screenshot: path/to/file.png" or just image paths
+    const imagePattern = /(?:screenshot|image|test result):\s*([^\s]+\.(?:png|jpg|jpeg|gif|webp))/gi;
+    const matches = [...text.matchAll(imagePattern)];
+
+    if (matches.length > 0) {
+      nodesToReplace.push({node, matches});
+    }
+  }
+
+  // Replace text nodes with image elements
+  nodesToReplace.forEach(({node, matches}) => {
+    const fragment = document.createDocumentFragment();
+    let lastIndex = 0;
+    let text = node.textContent;
+
+    matches.forEach(match => {
+      const beforeText = text.substring(lastIndex, match.index);
+      if (beforeText) {
+        fragment.appendChild(document.createTextNode(beforeText));
+      }
+
+      // Create image container
+      const imgContainer = document.createElement('div');
+      imgContainer.className = 'screenshot-container';
+
+      const header = document.createElement('div');
+      header.className = 'screenshot-header';
+      header.innerHTML = '📸 Test Screenshot';
+
+      const img = document.createElement('img');
+      img.className = 'screenshot-img';
+      img.src = match[1];
+      img.alt = 'Test screenshot';
+      img.onclick = () => window.open(img.src, '_blank');
+
+      imgContainer.appendChild(header);
+      imgContainer.appendChild(img);
+      fragment.appendChild(imgContainer);
+
+      lastIndex = match.index + match[0].length;
+    });
+
+    const remainingText = text.substring(lastIndex);
+    if (remainingText) {
+      fragment.appendChild(document.createTextNode(remainingText));
+    }
+
+    node.parentNode.replaceChild(fragment, node);
+  });
+}
+
+function renderJSON(content, container) {
+  const data = JSON.parse(content);
+  const formatted = JSON.stringify(data, null, 2);
+
+  container.innerHTML = `
+    <div class="json-card">
+      <div class="json-header">
+        <div class="json-title">
+          <span>🔗</span>
+          <span>API Response</span>
+        </div>
+        <span class="json-badge">JSON</span>
+      </div>
+      <div class="json-content">
+        <pre><code class="language-json">${escapeHtml(formatted)}</code></pre>
+      </div>
+    </div>
+  `;
+
+  if (typeof Prism !== 'undefined') {
+    Prism.highlightAll();
+  }
+}
+
+function renderMarkdown(content, container) {
+  if (typeof marked === 'undefined') {
+    container.innerHTML = `<pre>${escapeHtml(content)}</pre>`;
+    return;
+  }
+
+  // Configure marked
+  marked.setOptions({
+    breaks: true,
+    gfm: true,
+    headerIds: true,
+    mangle: false
+  });
+
+  const html = marked.parse(content);
+  container.innerHTML = html;
+
+  // Enhance code blocks with syntax highlighting and JSON formatting
+  if (typeof Prism !== 'undefined') {
+    container.querySelectorAll('pre code').forEach(block => {
+      // Try to detect and beautify JSON
+      if (block.textContent.trim().startsWith('{') || block.textContent.trim().startsWith('[')) {
+        try {
+          const parsed = JSON.parse(block.textContent);
+          block.classList.add('language-json');
+          const formatted = JSON.stringify(parsed, null, 2);
+          block.textContent = formatted;
+
+          // Wrap in a nice card for API responses
+          const pre = block.parentElement;
+          if (pre && pre.tagName === 'PRE') {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'json-card';
+            wrapper.innerHTML = `
+              <div class="json-header">
+                <div class="json-title">
+                  <span>🔗</span>
+                  <span>API Response</span>
+                </div>
+                <span class="json-badge">JSON</span>
+              </div>
+              <div class="json-content">
+                <pre><code class="language-json">${escapeHtml(formatted)}</code></pre>
+              </div>
+            `;
+            pre.parentNode.replaceChild(wrapper, pre);
+            Prism.highlightElement(wrapper.querySelector('code'));
+            return;
+          }
+        } catch(e) {}
+      }
+      Prism.highlightElement(block);
+    });
+  }
+
+  // Detect and enhance test case sections
+  enhanceTestCases(container);
+}
+
+function enhanceImages() {
+  const images = document.querySelectorAll('img');
+  images.forEach(img => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'screenshot-container';
+
+    const header = document.createElement('div');
+    header.className = 'screenshot-header';
+    header.innerHTML = '📸 Screenshot';
+
+    img.className = 'screenshot-img';
+    img.onclick = () => window.open(img.src, '_blank');
+
+    img.parentNode.insertBefore(wrapper, img);
+    wrapper.appendChild(header);
+    wrapper.appendChild(img);
+  });
+}
+
+function enhanceTestCases(container) {
+  // Look for test case patterns in the content
+  const headings = container.querySelectorAll('h2, h3');
+  headings.forEach(heading => {
+    const text = heading.textContent.toLowerCase();
+
+    // Check if this is a test case heading
+    if (text.includes('test case') || text.includes('test:') || text.match(/test \d+/)) {
+      // Determine pass/fail status from surrounding content
+      let status = 'pass';
+      let nextElement = heading.nextElementSibling;
+      let contentToCheck = heading.textContent;
+
+      // Check next few elements for status indicators
+      for (let i = 0; i < 3 && nextElement; i++) {
+        contentToCheck += ' ' + nextElement.textContent;
+        nextElement = nextElement.nextElementSibling;
+      }
+
+      const lowerContent = contentToCheck.toLowerCase();
+      if (lowerContent.includes('fail') || lowerContent.includes('error') || lowerContent.includes('✗')) {
+        status = 'fail';
+      }
+
+      // Wrap in test case card
+      const card = document.createElement('div');
+      card.className = 'test-case-card';
+
+      const header = document.createElement('div');
+      header.className = 'test-case-header';
+
+      const statusBadge = document.createElement('span');
+      statusBadge.className = `test-status ${status}`;
+      statusBadge.textContent = status === 'pass' ? '✓ PASS' : '✗ FAIL';
+
+      const title = document.createElement('div');
+      title.className = 'test-case-title';
+      title.textContent = heading.textContent;
+
+      header.appendChild(statusBadge);
+      header.appendChild(title);
+      card.appendChild(header);
+
+      // Collect content until next heading
+      const content = document.createElement('div');
+      nextElement = heading.nextElementSibling;
+      while (nextElement && !nextElement.matches('h2, h3')) {
+        const clone = nextElement.cloneNode(true);
+        content.appendChild(clone);
+        const toRemove = nextElement;
+        nextElement = nextElement.nextElementSibling;
+        toRemove.remove();
+      }
+
+      card.appendChild(content);
+      heading.parentNode.replaceChild(card, heading);
+    }
+  });
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Run on load
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', renderContent);
+} else {
+  renderContent();
+}
+</script>
+</body>
+</html>

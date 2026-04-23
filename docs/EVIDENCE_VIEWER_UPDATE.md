@@ -1,0 +1,230 @@
+# Evidence Viewer Implementation
+
+## Overview
+Updated the agentic-SDLC system to properly store, track, and display comprehensive test evidence (test cases, test results, API responses, screenshots, logs, metrics) in the SDLC UI.
+
+## Changes Made
+
+### 1. Updated `sdlc-validate` Skill (`sdlc_orchestrator/skills/sdlc-validate.md`)
+
+#### Fixed Method Name
+- **Before:** Used incorrect `wf.set_artifact()` method
+- **After:** Updated to use correct `wf.mark_artifact()` method
+- **Added:** Proper imports for `project_slug` utility
+
+```python
+from sdlc_orchestrator.state_machine import WorkflowState
+from sdlc_orchestrator.utils import project_slug
+from pathlib import Path
+
+slug = project_slug(Path("."))
+wf = WorkflowState(".")
+wf.mark_artifact("test_cases", f"docs/sdlc/{slug}/test-cases.md")
+wf.mark_artifact("test_results", f"docs/sdlc/{slug}/test-results.md")
+```
+
+#### Enhanced Evidence Collection
+- Added evidence indexing with `evidence/index.json`
+- Improved evidence file organization
+- Added automatic evidence cataloging script
+
+**Evidence Index Structure:**
+```json
+[
+  {
+    "file": "TC-001-response.json",
+    "test_id": "TC-001",
+    "type": "api_response",
+    "size": 1234
+  },
+  {
+    "file": "TC-001-screenshot.png",
+    "test_id": "TC-001",
+    "type": "screenshot",
+    "size": 56789
+  }
+]
+```
+
+#### Evidence Types Supported
+- **API Responses:** `TC-XXX-response.json`
+- **Screenshots:** `TC-XXX-screenshot.png`
+- **Logs:** `TC-XXX-logs.txt`
+- **Performance Metrics:** `TC-XXX-metrics.json` or `performance-metrics.json`
+- **Coverage Reports:** `coverage-report.html`
+
+### 2. Added Evidence API Endpoints (`sdlc_orchestrator/ui/server.py`)
+
+#### New Endpoints
+
+**GET `/api/projects/{name}/evidence`**
+- Lists all evidence files for a project
+- Returns evidence index if available
+- Falls back to directory scanning if index doesn't exist
+- Groups evidence by test ID
+
+**Response:**
+```json
+{
+  "evidence": [
+    {
+      "file": "TC-001-response.json",
+      "test_id": "TC-001",
+      "type": "api_response",
+      "size": 1234
+    }
+  ],
+  "evidence_dir": "/path/to/evidence"
+}
+```
+
+**GET `/api/projects/{name}/evidence/{filename}`**
+- Retrieves individual evidence files
+- Supports multiple content types:
+  - JSON files (application/json)
+  - Images (image/png, image/jpeg, etc.)
+  - HTML reports (text/html)
+  - Text logs (text/plain)
+- Includes security checks to prevent directory traversal
+
+### 3. Enhanced Dashboard UI (`sdlc_orchestrator/ui/dashboard.html`)
+
+#### Added Evidence Viewer Modal
+- Beautiful modal overlay with sidebar navigation
+- Groups evidence files by test ID
+- Color-coded evidence types
+- Responsive design
+
+**CSS Features:**
+- `.evidence-overlay` - Full-screen modal backdrop
+- `.evidence-modal` - Modal container with header, sidebar, and content area
+- `.evidence-sidebar` - Scrollable file list with test ID grouping
+- `.evidence-content` - Main content area for viewing files
+- Type-specific color coding:
+  - Screenshots: Purple (`#4c1d95`)
+  - API Responses: Blue (`#1e3a5f`)
+  - Logs: Orange (`#92400e`)
+  - Metrics: Green (`#14532d`)
+
+#### JavaScript Functions
+
+**`openEvidence(projectName)`**
+- Fetches evidence index from API
+- Groups files by test ID
+- Populates sidebar with clickable evidence items
+
+**`viewEvidence(filename, type)`**
+- Displays evidence file in content area
+- Handles different file types:
+  - JSON: Pretty-printed with syntax
+  - Images: Full-size display
+  - HTML: Rendered in iframe
+  - Text: Monospace display
+
+**`closeEvidence(event)`**
+- Closes evidence viewer modal
+
+#### Testing Phase Integration
+- Added "🔍 Evidence" button to testing phase artifacts
+- Button appears when test artifacts are available
+- Opens evidence viewer with one click
+
+## Directory Structure
+
+```
+docs/sdlc/<project-slug>/
+├── test-cases.md              # Comprehensive test cases
+├── test-results.md            # Test execution results
+└── evidence/
+    ├── index.json             # Evidence catalog (auto-generated)
+    ├── TC-001-response.json   # API response for TC-001
+    ├── TC-001-screenshot.png  # Screenshot for TC-001
+    ├── TC-002-logs.txt        # Logs for TC-002
+    ├── TC-050-metrics.json    # Performance metrics
+    └── coverage-report.html   # Code coverage report
+```
+
+## Usage Workflow
+
+### For QA Engineers (via sdlc-validate skill)
+
+1. **Generate test cases** → `docs/sdlc/<project>/test-cases.md`
+2. **Execute tests** and collect evidence:
+   ```python
+   # API Response
+   with open(f"docs/sdlc/{slug}/evidence/TC-001-response.json", "w") as f:
+       json.dump(response.json(), f, indent=2)
+   
+   # Screenshot
+   page.screenshot(path=f"docs/sdlc/{slug}/evidence/TC-001-screenshot.png")
+   
+   # Performance metrics
+   metrics = {"test_id": "TC-050", "duration_ms": 342, "target_ms": 500}
+   with open(f"docs/sdlc/{slug}/evidence/TC-050-metrics.json", "w") as f:
+       json.dump(metrics, f, indent=2)
+   ```
+3. **Create evidence index** (auto-generated by skill)
+4. **Generate test results** → `docs/sdlc/<project>/test-results.md`
+5. **Update workflow state**:
+   ```python
+   wf.mark_artifact("test_cases", f"docs/sdlc/{slug}/test-cases.md")
+   wf.mark_artifact("test_results", f"docs/sdlc/{slug}/test-results.md")
+   ```
+
+### For Reviewers (via SDLC Dashboard)
+
+1. Open SDLC Dashboard
+2. Navigate to project
+3. Click on "Testing" phase to expand
+4. Click "🔍 Evidence" button
+5. Browse evidence files by test ID
+6. Click any file to view:
+   - JSON files: Pretty-printed
+   - Screenshots: Full resolution
+   - Logs: Monospace text
+   - Metrics: Formatted JSON
+
+## Benefits
+
+1. **Comprehensive Evidence**: All test artifacts (screenshots, API responses, logs) stored and accessible
+2. **Traceability**: Every test case linked to its evidence files
+3. **Easy Review**: Visual evidence viewer in dashboard
+4. **Organized Storage**: Evidence grouped by test ID in structured directory
+5. **Multiple Formats**: Support for JSON, images, text, HTML
+6. **Secure Access**: Path validation prevents directory traversal attacks
+7. **Automated Indexing**: Evidence catalog auto-generated during testing phase
+
+## Testing Checklist
+
+- [ ] Run `sdlc-validate` skill on a test project
+- [ ] Verify evidence files are created in `docs/sdlc/<project>/evidence/`
+- [ ] Verify `index.json` is created with correct structure
+- [ ] Open SDLC Dashboard and navigate to testing phase
+- [ ] Click "Evidence" button
+- [ ] Verify all evidence files appear in sidebar
+- [ ] Click different file types and verify display:
+  - [ ] JSON files (API responses, metrics)
+  - [ ] Screenshots (PNG/JPG)
+  - [ ] Text logs
+  - [ ] HTML reports
+- [ ] Verify test-cases.md and test-results.md are accessible
+- [ ] Verify evidence links in test-results.md work correctly
+
+## Future Enhancements
+
+1. **Evidence Filtering**: Filter by test type, status, or date
+2. **Bulk Download**: Download all evidence as ZIP
+3. **Evidence Comparison**: Compare screenshots/responses across runs
+4. **Timeline View**: Chronological view of test execution
+5. **Search**: Full-text search across logs and API responses
+6. **Annotations**: Add comments/notes to evidence files
+7. **Video Support**: Support for test execution recordings
+
+## Technical Notes
+
+- Evidence files are stored relative to project root
+- UI server searches multiple locations for evidence directory
+- Evidence viewer uses same security checks as artifact viewer
+- Modal uses event propagation to prevent accidental closes
+- Image files streamed directly without loading into memory
+- JSON files pretty-printed for readability
