@@ -8,7 +8,7 @@ This document captures both:
 
 ## Product Goal
 
-Treat Claude, Codex, Kiro, and other coding agents as one execution pool.
+Treat Claude, Codex, Kiro, Gemini and other coding agents as one execution pool.
 
 The registry should:
 - know which agents are configured for a project

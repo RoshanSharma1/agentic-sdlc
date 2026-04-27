@@ -341,6 +341,15 @@ class WorkflowState:
     def is_done(self) -> bool:
         return self.phase == Phase.DONE
 
+    def requires_approval(self, spec: dict | None = None) -> bool:
+        """Check if current phase requires human approval based on spec.yaml config."""
+        if spec is None:
+            from sdlc_orchestrator.memory import MemoryManager
+            spec = MemoryManager(self.project_dir).spec()
+
+        phase_approvals = spec.get("phase_approvals", {})
+        return phase_approvals.get(self.phase.value, True)
+
     def label(self) -> str:
         if self.status == Status.BLOCKED:
             return f"BLOCKED — {self.blocked_reason or 'needs intervention'}"

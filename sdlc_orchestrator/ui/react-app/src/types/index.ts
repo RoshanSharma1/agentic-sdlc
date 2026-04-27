@@ -47,6 +47,7 @@ export interface Project {
   source?: ProjectSource;
   repo_binding?: RepoBinding;
   archived?: boolean;
+  phase_approvals?: Record<string, boolean>;
 }
 
 export interface PhaseData {

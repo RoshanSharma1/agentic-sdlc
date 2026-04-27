@@ -949,26 +949,85 @@ def check_codex_status() -> AgentStatus:
     return status
 
 
-def check_all_agents() -> dict[str, AgentStatus]:
+def check_gemini_status(project_dir: Optional[Path] = None) -> AgentStatus:
+    """Check Gemini availability."""
+    if not shutil.which("gemini"):
+        return _missing_binary_status(
+            name="gemini",
+            version_cmd=["gemini", "--version"],
+            status_command='gemini --help',
+            interactive_status_command=None,
+            interactive_usage_command=None,
+            notes="Gemini CLI is locally installed.",
+        )
+
+    status = AgentStatus(
+        name="gemini",
+        available=True,
+        installed=True,
+        authenticated=True,
+        exhausted=False,
+        state="ready",
+        version=_version(["gemini", "--version"]),
+        status_command="gemini --version",
+        status_source="gemini --version",
+        notes="Gemini CLI is available.",
+        last_checked=_checked_at(),
+    )
+
+    # Enrich with local project registry if available
+    if project_dir:
+        try:
+            from sdlc_orchestrator.agent_registry import AgentRegistry
+            registry = AgentRegistry(project_dir)
+            agent_info = registry.get_agent("gemini")
+            if agent_info:
+                status.total_tokens = agent_info.total_tokens_used
+                status.total_api_calls = agent_info.total_api_calls
+                status.total_cost = agent_info.estimated_cost_usd
+                
+                quota_limit = agent_info.credits_limit or 4_000_000
+                used_percentage = min(100, int((status.total_tokens / quota_limit) * 100)) if quota_limit > 0 else 0
+                remaining_percentage = max(0, 100 - used_percentage)
+                
+                status.usage_windows.append(
+                    UsageWindow(
+                        label="Token Quota",
+                        used_percentage=used_percentage,
+                        remaining_percentage=remaining_percentage,
+                        reset_at="Monthly (Local)",
+                        exhausted=used_percentage >= 100
+                    )
+                )
+        except Exception:
+            pass
+
+    if not status.next_reset_at:
+        status.next_reset_at = "N/A"
+
+    return status
+
+
+def check_all_agents(project_dir: Optional[Path] = None) -> dict[str, AgentStatus]:
     return {
         "claude-code": check_claude_status(),
         "kiro": check_kiro_status(),
+        "gemini": check_gemini_status(project_dir),
         "codex": check_codex_status(),
     }
 
 
 def get_agent_usage_stats(project_dir=None) -> dict[str, AgentStatus]:
-    _ = project_dir
-    return check_all_agents()
+    return check_all_agents(project_dir)
 
 
-def get_recommended_agent() -> Optional[str]:
-    statuses = check_all_agents()
-    for agent_name in ["claude-code", "kiro", "codex"]:
+def get_recommended_agent(project_dir: Optional[Path] = None) -> Optional[str]:
+    statuses = check_all_agents(project_dir)
+    for agent_name in ["claude-code", "kiro", "gemini", "codex"]:
         status = statuses.get(agent_name)
         if status and status.state == "ready":
             return agent_name
-    for agent_name in ["claude-code", "kiro", "codex"]:
+    for agent_name in ["claude-code", "kiro", "gemini", "codex"]:
         status = statuses.get(agent_name)
         if status and status.available:
             return agent_name

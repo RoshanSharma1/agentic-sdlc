@@ -87,6 +87,14 @@ export const projectsApi = {
     return data;
   },
 
+  // Update phase-specific approvals
+  updatePhaseApprovals: async (name: string, phaseApprovals: Record<string, boolean>) => {
+    const { data } = await api.post(`/projects/${encodeURIComponent(name)}/phase-approvals`, {
+      phase_approvals: phaseApprovals,
+    });
+    return data;
+  },
+
   // Hold project
   hold: async (name: string) => {
     const { data } = await api.post(`/projects/${encodeURIComponent(name)}/hold`);

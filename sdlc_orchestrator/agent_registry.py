@@ -168,10 +168,16 @@ class AgentRegistry:
                 priority=2,
                 provider="kiro",
             ),
+            "gemini": AgentInfo(
+                name="gemini",
+                status=AgentStatus.AVAILABLE,
+                priority=3,
+                provider="google",
+            ),
             "codex": AgentInfo(
                 name="codex",
                 status=AgentStatus.AVAILABLE,
-                priority=3,
+                priority=4,
                 provider="openai",
             ),
         }
@@ -631,7 +637,7 @@ def _default_provider(name: str) -> Optional[str]:
         "claude-code": "anthropic",
         "codex": "openai",
         "kiro": "kiro",
-        "cline": "cline",
+        "gemini": "google",
         "cursor": "cursor",
         "windsurf": "windsurf",
     }
@@ -652,9 +658,9 @@ PROVIDER_PRICING = {
         "input": 0.0,  # Free tier or custom pricing
         "output": 0.0,
     },
-    "cline": {
-        "input": 3.00,
-        "output": 15.00,
+    "google": {
+        "input": 0.0,
+        "output": 0.0,
     },
     "cursor": {
         "input": 0.0,  # Subscription based

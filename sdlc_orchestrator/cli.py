@@ -7,7 +7,7 @@ from sdlc_orchestrator.commands.story import story
 from sdlc_orchestrator.commands.github import github
 from sdlc_orchestrator.commands.init import init
 from sdlc_orchestrator.commands.project import project
-from sdlc_orchestrator.commands.ops import status, notify, watch, webhook, tick, relink
+from sdlc_orchestrator.commands.ops import status, notify, webhook, tick, relink
 from sdlc_orchestrator.commands.ui import ui
 from sdlc_orchestrator.commands.agent import agent
 
@@ -26,7 +26,6 @@ cli.add_command(story)
 cli.add_command(github)
 cli.add_command(status)
 cli.add_command(notify)
-cli.add_command(watch)
 cli.add_command(webhook)
 cli.add_command(tick)
 cli.add_command(relink)

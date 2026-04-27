@@ -31,7 +31,14 @@ const StartProjectModal = ({ isOpen, onClose, onSuccess }: StartProjectModalProp
   const [repoName, setRepoName] = useState('');
   const [repoPrivate, setRepoPrivate] = useState(true);
   const [agentOrder, setAgentOrder] = useState('claude-code, kiro, codex');
-  const [requireApprovals, setRequireApprovals] = useState(true);
+  const [phaseApprovals, setPhaseApprovals] = useState({
+    requirement: false,
+    design: false,
+    planning: false,
+    implementation: false,
+    testing: false,
+    documentation: false,
+  });
   const [agentFallback, setAgentFallback] = useState(true);
   const [startPipeline, setStartPipeline] = useState(true);
 
@@ -120,7 +127,7 @@ const StartProjectModal = ({ isOpen, onClose, onSuccess }: StartProjectModalProp
         tech_stack: techStack,
         source_label: sourceLabel,
         source_type: sourceMode,
-        require_approvals: requireApprovals,
+        phase_approvals: phaseApprovals,
         agent_fallback: agentFallback,
         agent_order: agentOrder,
         start_pipeline: startPipeline,
@@ -168,7 +175,14 @@ const StartProjectModal = ({ isOpen, onClose, onSuccess }: StartProjectModalProp
     setRepoName('');
     setRepoPrivate(true);
     setAgentOrder('claude-code, kiro, codex');
-    setRequireApprovals(true);
+    setPhaseApprovals({
+      requirement: false,
+      design: false,
+      planning: false,
+      implementation: false,
+      testing: false,
+      documentation: false,
+    });
     setAgentFallback(true);
     setStartPipeline(true);
     setSourceMode('manual');
@@ -204,7 +218,7 @@ const StartProjectModal = ({ isOpen, onClose, onSuccess }: StartProjectModalProp
               <option value="claude-code">claude-code</option>
               <option value="kiro">kiro</option>
               <option value="codex">codex</option>
-              <option value="cline">cline</option>
+              <option value="gemini">gemini</option>
             </select>
           </div>
 
@@ -419,15 +433,97 @@ const StartProjectModal = ({ isOpen, onClose, onSuccess }: StartProjectModalProp
             />
           </div>
 
+          <div className="modal-section">
+            <div className="modal-section-head">
+              <div>
+                <div className="modal-section-title">Phase Approvals</div>
+                <div className="modal-section-copy">
+                  Select which phases require human approval before proceeding.
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  className="modal-mini-btn"
+                  onClick={() => setPhaseApprovals({
+                    requirement: true,
+                    design: true,
+                    planning: true,
+                    implementation: true,
+                    testing: true,
+                    documentation: true,
+                  })}
+                >
+                  All
+                </button>
+                <button
+                  className="modal-mini-btn"
+                  onClick={() => setPhaseApprovals({
+                    requirement: false,
+                    design: false,
+                    planning: false,
+                    implementation: false,
+                    testing: false,
+                    documentation: false,
+                  })}
+                >
+                  None
+                </button>
+              </div>
+            </div>
+
+            <div className="modal-checks" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
+              <label className="modal-check">
+                <input
+                  type="checkbox"
+                  checked={phaseApprovals.requirement}
+                  onChange={(e) => setPhaseApprovals({...phaseApprovals, requirement: e.target.checked})}
+                />
+                Requirements
+              </label>
+              <label className="modal-check">
+                <input
+                  type="checkbox"
+                  checked={phaseApprovals.design}
+                  onChange={(e) => setPhaseApprovals({...phaseApprovals, design: e.target.checked})}
+                />
+                Design
+              </label>
+              <label className="modal-check">
+                <input
+                  type="checkbox"
+                  checked={phaseApprovals.planning}
+                  onChange={(e) => setPhaseApprovals({...phaseApprovals, planning: e.target.checked})}
+                />
+                Planning
+              </label>
+              <label className="modal-check">
+                <input
+                  type="checkbox"
+                  checked={phaseApprovals.implementation}
+                  onChange={(e) => setPhaseApprovals({...phaseApprovals, implementation: e.target.checked})}
+                />
+                Implementation
+              </label>
+              <label className="modal-check">
+                <input
+                  type="checkbox"
+                  checked={phaseApprovals.testing}
+                  onChange={(e) => setPhaseApprovals({...phaseApprovals, testing: e.target.checked})}
+                />
+                Testing
+              </label>
+              <label className="modal-check">
+                <input
+                  type="checkbox"
+                  checked={phaseApprovals.documentation}
+                  onChange={(e) => setPhaseApprovals({...phaseApprovals, documentation: e.target.checked})}
+                />
+                Documentation
+              </label>
+            </div>
+          </div>
+
           <div className="modal-checks">
-            <label className="modal-check">
-              <input
-                type="checkbox"
-                checked={requireApprovals}
-                onChange={(e) => setRequireApprovals(e.target.checked)}
-              />
-              Require phase approvals
-            </label>
             <label className="modal-check">
               <input
                 type="checkbox"

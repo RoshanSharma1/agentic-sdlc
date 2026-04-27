@@ -55,6 +55,22 @@ AGENT_CLI_COMMANDS = {
             "billing_cycle_pattern": r'cycle[:\s]+(monthly|weekly|yearly)',
         }
     },
+
+    "gemini": {
+        "check_installed": ["which", "gemini"],
+        "usage": None,
+        "credits": None,
+        "billing": None,
+        "account": None,
+        "parser": {
+            "credits_pattern": r'credits?[:\s]+(\d+)',
+            "cost_pattern": r'\$(\d+\.?\d*)',
+            "tokens_pattern": r'tokens?[:\s]+(\d+)',
+            "tier_pattern": r'(pro|free|enterprise|plus)',
+            "reset_date_pattern": r'reset[:\s]+(\d{4}-\d{2}-\d{2})',
+            "billing_cycle_pattern": r'cycle[:\s]+(monthly|weekly|yearly)',
+        }
+    },
 }
 
 # Provider-specific notes and documentation links
@@ -70,6 +86,10 @@ PROVIDER_DOCS = {
     "codex": {
         "docs_url": "https://platform.openai.com/docs/",
         "notes": "OpenAI CLI: Check if 'openai api usage' or similar command exists.",
+    },
+    "gemini": {
+        "docs_url": "https://ai.google.dev/",
+        "notes": "Gemini CLI usage is currently tracked locally in the agent registry.",
     },
 }
 

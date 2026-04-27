@@ -19,20 +19,30 @@ def agent():
 
 @agent.command(name="list")
 @click.option("--project-dir", type=Path, default=Path.cwd())
-def list_agents(project_dir: Path):
+@click.option("--no-health", is_flag=True, help="Skip real-time health check")
+def list_agents(project_dir: Path, no_health: bool):
     """List all registered agents and their status."""
+    from sdlc_orchestrator.agent_status_checker import check_all_agents
+
     registry = AgentRegistry(project_dir)
+
+    # Get real-time health by default (unless --no-health is specified)
+    health = not no_health
+    health_status = check_all_agents(project_dir) if health else {}
 
     table = Table(title="AI Agent Registry", show_header=True)
     table.add_column("Priority", style="cyan", width=8)
-    table.add_column("Agent", style="bold")
-    table.add_column("Status", width=12)
+    table.add_column("Agent", style="bold", width=12)
+    table.add_column("Registry Status", width=14)
+    if health:
+        table.add_column("Live State", width=12)
+        table.add_column("Exhausted", width=10)
     table.add_column("Success", justify="right", width=8)
     table.add_column("Failures", justify="right", width=8)
     table.add_column("Last Used", width=20)
 
     for agent in registry.list_agents():
-        # Status with color
+        # Registry status with color
         status_color = {
             AgentStatus.AVAILABLE: "green",
             AgentStatus.NO_CREDITS: "yellow",
@@ -48,14 +58,46 @@ def list_agents(project_dir: Path):
             # Show just the date/time
             last_used = agent.last_used.split("T")[0] + " " + agent.last_used.split("T")[1][:5]
 
-        table.add_row(
+        # Build row
+        row = [
             str(agent.priority),
             agent.name,
             status_text,
+        ]
+
+        # Add health info if available
+        if health:
+            live_status = health_status.get(agent.name)
+            if live_status:
+                # State color coding
+                state_colors = {
+                    "ready": "green",
+                    "exhausted": "red",
+                    "signed_out": "yellow",
+                    "not_installed": "dim",
+                    "unknown": "blue",
+                }
+                state_color = state_colors.get(live_status.state, "white")
+                state_text = f"[{state_color}]{live_status.state}[/]"
+
+                # Exhausted indicator
+                exhausted = "⚠" if live_status.exhausted else ("✓" if live_status.exhausted is False else "?")
+                if live_status.exhausted:
+                    exhausted = f"[red]{exhausted}[/]"
+                elif live_status.exhausted is False:
+                    exhausted = f"[green]{exhausted}[/]"
+
+                row.extend([state_text, exhausted])
+            else:
+                row.extend(["[dim]N/A[/]", "[dim]?[/]"])
+
+        row.extend([
             str(agent.success_count),
             str(agent.failure_count),
             last_used,
-        )
+        ])
+
+        table.add_row(*row)
 
     console.print(table)
 
@@ -164,3 +206,84 @@ def enable_agent(agent_name: str, project_dir: Path):
         console.print(f"[green]✓[/green] Agent '{agent_name}' enabled")
     else:
         console.print(f"[red]✗[/red] Agent '{agent_name}' not found")
+
+
+@agent.command(name="health")
+@click.option("--project-dir", type=Path, default=Path.cwd())
+def health(project_dir: Path):
+    """Check real-time health and availability of all agents."""
+    from sdlc_orchestrator.agent_status_checker import check_all_agents
+
+    console.print("\n[bold cyan]Checking agent health...[/bold cyan]\n")
+
+    statuses = check_all_agents(project_dir)
+
+    table = Table(title="Agent Health Status", show_header=True)
+    table.add_column("Agent", style="bold", width=12)
+    table.add_column("State", width=12)
+    table.add_column("Installed", width=10)
+    table.add_column("Authenticated", width=13)
+    table.add_column("Exhausted", width=10)
+    table.add_column("Version", width=10)
+    table.add_column("Next Reset", width=20)
+
+    for agent_name, status in statuses.items():
+        # State color coding
+        state_colors = {
+            "ready": "green",
+            "exhausted": "red",
+            "signed_out": "yellow",
+            "not_installed": "dim",
+            "unknown": "blue",
+        }
+        state_color = state_colors.get(status.state, "white")
+        state_text = f"[{state_color}]{status.state}[/]"
+
+        # Boolean indicators
+        installed = "✓" if status.installed else "✗"
+        authenticated = "✓" if status.authenticated else ("✗" if status.authenticated is False else "?")
+        exhausted = "⚠" if status.exhausted else ("✓" if status.exhausted is False else "?")
+
+        # Color exhausted field
+        if status.exhausted:
+            exhausted = f"[red]{exhausted}[/]"
+        elif status.exhausted is False:
+            exhausted = f"[green]{exhausted}[/]"
+
+        table.add_row(
+            agent_name,
+            state_text,
+            installed,
+            authenticated,
+            exhausted,
+            status.version or "N/A",
+            status.next_reset_at or "N/A",
+        )
+
+    console.print(table)
+
+    # Show usage windows for agents with detailed info
+    for agent_name, status in statuses.items():
+        if status.usage_windows:
+            console.print(f"\n[bold]{agent_name} Usage:[/bold]")
+            for window in status.usage_windows:
+                if window.used_percentage is not None:
+                    bar_width = 30
+                    filled = int(bar_width * window.used_percentage / 100)
+                    bar = "█" * filled + "░" * (bar_width - filled)
+
+                    color = "green" if window.used_percentage < 80 else "yellow" if window.used_percentage < 100 else "red"
+                    console.print(
+                        f"  {window.label}: [{color}]{bar}[/] {window.used_percentage}% used"
+                    )
+                    if window.reset_at:
+                        console.print(f"    Resets: {window.reset_at}")
+
+    # Show errors
+    errors = [(name, status.error_message) for name, status in statuses.items() if status.error_message]
+    if errors:
+        console.print("\n[yellow]⚠ Issues:[/yellow]")
+        for name, error in errors:
+            console.print(f"  [red]{name}:[/red] {error}")
+
+    console.print()  # blank line

@@ -8,16 +8,116 @@ An **AI agent extension** that turns any supported AI coding agent into an auton
 > - **Hooks** — event-driven automation that reacts to what the agent does (e.g. detecting test failures)
 > - **CLI** (`sdlc`) — a state management layer plus Python runtime that tracks workflow progress and dispatches phase agents
 
-> **Supported agents:** Claude Code, Codex, Kiro, Cline
-> Set `executor` in `spec.yaml` to one of: `claude-code`, `codex`, `kiro`, `cline`
+> **Supported agents:** Claude Code, Codex, Kiro, Gemini
+> Set `executor` in `spec.yaml` to one of: `claude-code`, `codex`, `kiro`, `gemini`
+
+---
+
+## Architecture: Chorus AIDLC
+
+The orchestrator implements a **hierarchical state machine** (Chorus: Agentic SDLC) that manages the full development lifecycle:
+
+```
+Phase (requirement → design → planning → implementation → testing → documentation → done)
+  └── Status (pending → in_progress → awaiting_approval → done)
+      └── Stories (single-artifact phases: 1 story; implementation: N stories)
+            └── Story
+                  ├── status (pending → in_progress → awaiting_review → done)
+                  ├── github_issue  (optional)
+                  ├── github_pr     (optional)
+                  └── tasks  (implementation stories only: TASK-NNN → status)
+```
+
+**Key Components:**
+- **State Machine** (`WorkflowState`) — Manages phase/status/story transitions with full history
+- **Runtime** (`OrchestratorRuntime`) — Event-driven executor that spawns agents in headless mode
+- **Backend Store** (SQLite + JSON) — Dual persistence for state, runs, jobs, and events
+- **Agent Registry** — Multi-agent support with automatic fallback
+
+See [docs/chorus-aidlc-verification.md](docs/chorus-aidlc-verification.md) for the complete technical architecture.
+
+**Status:** ✅ State machine verified and production-ready (verified 2026-04-26)
 
 ---
 
 ## How It Works
 
-You install the extension, point it at a project, and run `/sdlc-start` once inside your agent. That's it — `/sdlc-start` handles setup, interviews you, and hands the agent the wheel.
+The orchestrator uses an **event-driven runtime** that coordinates between you, GitHub, and autonomous agents:
 
-Each phase produces a GitHub PR on a namespaced branch (`sdlc-<project>-<phase>`). You review on GitHub, leave comments as feedback, and approve the PR. The agent detects the approval on the next tick and continues — no terminal commands needed.
+1. **You run `/sdlc-start`** — Interviews you, writes `spec.yaml`, initializes the state machine
+2. **Python runtime dispatches agents** — Spawns phase agents in headless mode (e.g., `claude --yes /sdlc-requirement`)
+3. **Agent completes phase** — Transitions state to `awaiting_approval`, opens GitHub PR
+4. **You approve PR on GitHub** — Webhook triggers `APPROVAL_RECEIVED` event
+5. **Runtime auto-dispatches next phase** — Event handler spawns the next agent
+6. **Repeat until done** — Linear progression through all phases
+
+Each phase produces a GitHub PR on a namespaced branch (`sdlc-<project>-<phase>`). You review on GitHub, leave comments as feedback, and approve the PR. The runtime detects the approval via webhook (or polling) and automatically continues — **no terminal commands needed after the initial `/sdlc-start`**.
+
+---
+
+## Runtime Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      User / GitHub                           │
+└────────────────┬──────────────────────────┬─────────────────┘
+                 │                          │
+           (PR approval)              (CLI commands)
+                 │                          │
+                 v                          v
+┌────────────────────────────────────────────────────────────┐
+│                  OrchestratorRuntime                        │
+│  ┌──────────┐  ┌──────────────┐  ┌────────────────────┐   │
+│  │ EventBus │  │ WorkflowState│  │ AgentRegistry      │   │
+│  │ (pub/sub)│◄─┤ (state       │─►│ (multi-agent       │   │
+│  │          │  │  machine)    │  │  dispatch)         │   │
+│  └─────┬────┘  └──────┬───────┘  └──────┬─────────────┘   │
+│        │              │                  │                 │
+│        └──────────────┴──────────────────┘                 │
+│                       │                                    │
+│                       v                                    │
+│        ┌──────────────────────────────────┐               │
+│        │  BackendStore (SQLite)           │               │
+│        │  • projects  • jobs  • events    │               │
+│        └──────────────────────────────────┘               │
+└───────────────────────┬──────────────────┬────────────────┘
+                        │                  │
+                        v                  v
+               ┌────────────────┐  ┌───────────────────┐
+               │ state.json     │  │ Agent Process     │
+               │ (.sdlc/)       │  │ (headless mode)   │
+               └────────────────┘  └───────────────────┘
+```
+
+**Components:**
+- **EventBus** — Publishes events: `APPROVAL_RECEIVED`, `AGENT_RUN_FINISHED`, `JOB_QUEUED`, etc.
+- **WorkflowState** — State machine operations: `transition_to()`, `approve()`, `submit_for_approval()`
+- **AgentRegistry** — Tracks available agents, selects with fallback (spec.yaml `executor` → `job_agents` → all available)
+- **BackendStore** — SQLite persistence for projects, agent runs, jobs, approval events, workflow history
+- **Runtime** — Spawns agents via `spawn_for_project()`, waits for exit code, publishes `AGENT_RUN_FINISHED`
+
+**Event Flow Example:**
+```
+GitHub webhook: PR approved
+  ↓
+EventBus publishes APPROVAL_RECEIVED
+  ↓
+Default handler calls runtime.spawn_for_project(phase="design")
+  ↓
+AgentRegistry selects agent (codex → claude-code → kiro → gemini)
+  ↓
+Runtime spawns: `claude --yes /sdlc-design`
+  ↓
+Agent runs in background thread
+  ↓
+Exit code 0 → EventBus publishes AGENT_RUN_FINISHED
+  ↓
+WorkflowState transitions to next phase or awaiting_approval
+```
+
+---
+
+## Workflow Example
 
 ```
 You                          Agent (autonomous)
@@ -110,7 +210,7 @@ Pass `--no-approvals` to let the agent advance through all phases without waitin
 | **Claude Code** | `claude` in terminal | `~/.claude/commands/` |
 | **Codex** | `codex` in terminal | `~/.codex/commands/` |
 | **Kiro** | `kiro-cli chat` in terminal | `~/.kiro/skills/` + `~/.kiro/agents/` |
-| **Cline** | Open VS Code with Cline | `~/.cline/commands/` |
+| **Gemini** | `gemini` in terminal | `~/.gemini/commands/` |
 
 ---
 
@@ -157,34 +257,40 @@ Shows the current state, approval status, branch, and recent history.
 
 ---
 
-### Step 6 — Keep the agent on standby (optional but recommended)
+### Step 6 — Setup Real-Time GitHub Webhooks (Recommended)
 
-**Polling mode — `sdlc watch` (no infrastructure needed)**
+For fully autonomous operation, configure GitHub webhooks to trigger the orchestrator in real-time when PRs are approved.
 
-```bash
-sdlc watch
-```
-
-Polls GitHub every 30 seconds across all projects. The moment a phase PR is approved or merged, it triggers the agent automatically. Also detects stuck agents (state unchanged for 10 minutes) and re-triggers them.
+**Quick Setup:**
 
 ```bash
-sdlc watch --interval 60 --stale-timeout 300
-```
+# 1. Run the 24/7 webhook setup
+./scripts/setup-webhook-24x7.sh
 
-**Webhook mode — real-time, zero polling**
+# 2. Start ngrok tunnel
+./scripts/start-ngrok.sh
 
-```bash
-# 1. Expose a public URL
-ngrok http 8080
-
-# 2. Start the receiver
-sdlc webhook --port 8080 --secret your-webhook-secret
-
-# 3. In GitHub repo settings → Webhooks, add:
+# 3. Configure GitHub webhook (see WEBHOOK-SETUP.md)
 #    URL: https://<ngrok-url>/webhook
-#    Content type: application/json
+#    Secret: (provided by setup script)
+#    Events: Pull requests, Pull request reviews
+```
+
+See [WEBHOOK-SETUP.md](WEBHOOK-SETUP.md) for complete setup guide.
+
+**Manual Webhook Server:**
+
+```bash
+# Start webhook server
+sdlc webhook --port 8765 --secret your-webhook-secret
+
+# In another terminal, expose via ngrok
+ngrok http 8765
+
+# Configure GitHub webhook:
+#    URL: https://<ngrok-url>/webhook
 #    Secret: your-webhook-secret
-#    Events: Pull request reviews, Pull requests
+#    Events: Pull requests, Pull request reviews
 ```
 
 ---
@@ -297,7 +403,7 @@ tech_stack: Node.js
 repo: owner/repo
 slack_webhook: ""
 description: What the project does
-executor: kiro               # claude-code | codex | kiro | cline
+executor: kiro               # claude-code | codex | kiro | gemini
 
 phase_approvals:             # Set to false to let the agent advance without waiting for PR approval
   requirement: true
@@ -312,25 +418,56 @@ phase_approvals:             # Set to false to let the agent advance without wai
 
 ## State Machine
 
-The orchestrator manages 15 states:
+The orchestrator uses a **hierarchical state machine** with 3 levels:
 
-| State | Type | Description |
-|-------|------|-------------|
-| `requirement_in_progress` | Auto | Drafting requirements |
-| `requirement_ready_for_approval` | **Human gate** | Requirements PR open |
-| `design_in_progress` | Auto | Designing system architecture |
-| `awaiting_design_approval` | **Human gate** | Design PR open |
-| `task_plan_in_progress` | Auto | Breaking design into stories and tasks |
-| `task_plan_ready` | **Human gate** | Plan PR open |
-| `story_in_progress` | Auto | Implementing a story |
-| `story_awaiting_review` | **Human gate** | Story PR open |
-| `feedback_incorporation` | Auto | Incorporating review feedback |
-| `testing_in_progress` | Auto | Running the thorough validation pass and fixing defects |
-| `testing_awaiting_approval` | **Human gate** | Testing PR open |
-| `documentation_in_progress` | Auto | Writing docs + archiving artifacts |
-| `documentation_awaiting_approval` | **Human gate** | Docs PR open |
-| `blocked` | **Human gate** | Needs manual intervention |
-| `done` | Terminal | Complete — final PR opened |
+### Core States
+
+**Phases (7):**
+- `requirement` → `design` → `planning` → `implementation` → `testing` → `documentation` → `done`
+
+**Statuses (5):**
+- `pending` — Not yet started
+- `in_progress` — Agent working (executable state)
+- `awaiting_approval` — PR open, waiting for human review (approval gate)
+- `blocked` — Manual intervention needed
+- `done` — Phase complete
+
+**Story Statuses (5):**
+- `pending` → `in_progress` → `awaiting_review` → `feedback` → `done`
+
+### State Combinations
+
+| Phase | Status | Type | Description |
+|-------|--------|------|-------------|
+| `requirement` | `in_progress` | Auto | Drafting requirements |
+| `requirement` | `awaiting_approval` | **Human gate** | Requirements PR open |
+| `design` | `in_progress` | Auto | Designing system architecture |
+| `design` | `awaiting_approval` | **Human gate** | Design PR open |
+| `planning` | `in_progress` | Auto | Breaking design into stories and tasks |
+| `planning` | `awaiting_approval` | **Human gate** | Plan PR open |
+| `implementation` | `in_progress` | Auto | Implementing stories (story-level tracking) |
+| `implementation` | `awaiting_approval` | **Human gate** | Story PR open |
+| `testing` | `in_progress` | Auto | Running validation pass and fixing defects |
+| `testing` | `awaiting_approval` | **Human gate** | Testing PR open |
+| `documentation` | `in_progress` | Auto | Writing docs + archiving artifacts |
+| `documentation` | `awaiting_approval` | **Human gate** | Docs PR open |
+| `*` | `blocked` | **Human gate** | Needs manual intervention |
+| `done` | `done` | Terminal | Complete — final PR opened |
+
+**Note:** Legacy flat-state strings (e.g., `requirement_in_progress`, `task_plan_ready`) are supported for backward compatibility but the system now uses the hierarchical `phase:status` model internally.
+
+### State Persistence
+
+All state is stored in:
+- **Primary:** `.sdlc/workflow/state.json` (git-ignored, local state file)
+- **Backend:** `~/.sdlc/backend.sqlite3` (SQLite database for dashboard + events)
+
+View current state:
+```bash
+sdlc status              # Human-friendly display
+sdlc state get           # Machine-readable output
+sdlc state history       # Transition log
+```
 
 ---
 
@@ -443,24 +580,46 @@ Creates labels, a Projects v2 board, workflow automations, and one issue per SDL
 
 ### Human-facing commands
 
+**Project Setup:**
 | Command | Description |
 |---------|-------------|
 | `sdlc init [source]` | Scaffold a project (new, GitHub repo, or local path) |
-| `sdlc status` | Show current workflow state and history |
-| `sdlc watch [--interval N] [--stale-timeout N]` | Poll GitHub PRs and trigger agent on approval; detects stuck agents |
+
+**Monitoring:**
+| Command | Description |
+|---------|-------------|
+| `sdlc status` | Show current workflow state and history (human-friendly) |
 | `sdlc webhook [--port N] [--secret S]` | Webhook receiver for real-time GitHub events |
-| `sdlc state approve` | Advance past a gate manually (fallback when no GitHub) |
+
+**State Management:**
+| Command | Description |
+|---------|-------------|
+| `sdlc state get` | Print current state (machine-readable: `phase:status`) |
+| `sdlc state approve` | Advance past approval gate manually (fallback when no GitHub) |
 | `sdlc state no-approvals` | Disable all phase approval gates — agent advances automatically |
 | `sdlc state approvals` | Re-enable all phase approval gates |
+| `sdlc state set <value>` | Manually set phase/status (supports `requirement`, `in_progress`, legacy strings) |
+| `sdlc state history` | View state transition history with timestamps |
 
 ### Agent-facing commands (called during orchestration)
 
+**Skills (invoked as `/sdlc-*` by agents):**
+| Skill | When Used |
+|-------|-----------|
+| `/sdlc-start` | User-initiated: interview + setup + first phase |
+| `/sdlc-requirement` | Runtime dispatches for requirement phase |
+| `/sdlc-design` | Runtime dispatches for design phase |
+| `/sdlc-plan` | Runtime dispatches for planning phase |
+| `/sdlc-implement` | Runtime dispatches for implementation (per story) |
+| `/sdlc-validate` | Runtime dispatches for testing phase |
+| `/sdlc-review` | Runtime dispatches for documentation phase |
+| `/sdlc-feedback` | Apply PR review feedback |
+| `/sdlc-cleanup-worktree` | Clean up git worktrees |
+
+**Utilities (called from within skills):**
 | Command | Description |
 |---------|-------------|
-| `sdlc state get` | Get current state (machine-readable) |
-| `sdlc state set <state>` | Transition to a new state |
-| `sdlc state history` | View state transition history |
-| `sdlc artifact read <name>` | Read a phase artifact |
+| `sdlc artifact read <name>` | Read a phase artifact (requirements, design, plan, etc.) |
 | `sdlc artifact list` | List available artifacts |
 | `sdlc story start <STORY-NNN>` | Set active story and begin implementation |
 | `sdlc story complete` | Mark story approved, advance to next or done |
@@ -474,6 +633,22 @@ Creates labels, a Projects v2 board, workflow automations, and one issue per SDL
 | `sdlc github create-pr <branch> <phase>` | Open a PR for a phase branch |
 | `sdlc github create-issue <title> [body-file]` | Create a GitHub issue |
 | `sdlc github close-phase-issue <phase>` | Close the GitHub issue for a phase |
+
+---
+
+## Technical Documentation
+
+For developers and technical readers:
+
+- **[State Machine Verification](docs/chorus-aidlc-verification.md)** — Complete technical architecture of the Chorus AIDLC state machine, including:
+  - Hierarchical state model (Phase → Status → Stories → Tasks)
+  - `WorkflowState` class internals
+  - `OrchestratorRuntime` event-driven execution
+  - Backend persistence (SQLite + JSON)
+  - Multi-agent dispatch logic
+  - Test coverage and verification checklist
+
+- **[Agent Registry Quickstart](AGENT_REGISTRY_QUICKSTART.md)** — How to configure multi-agent support and fallback
 
 ---
 

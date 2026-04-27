@@ -26,7 +26,7 @@ EXECUTOR_CONFIG: dict[str, tuple[str, Path, Path]] = {
     "claude-code": ("CLAUDE.md",  Path.home() / ".claude" / "commands", Path(".claude")),
     "codex":       ("AGENTS.md",  Path.home() / ".codex"  / "commands", Path(".codex")),
     "kiro":        ("AGENT.md",   Path.home() / ".kiro"   / "skills",   Path(".kiro")),
-    "cline":       ("AGENT.md",   Path.home() / ".cline"  / "commands", Path(".cline")),
+    "gemini":      ("GEMINI.md",  Path.home() / ".gemini" / "commands", Path(".gemini")),
 }
 DEFAULT_EXECUTOR = "claude-code"
 
@@ -36,7 +36,7 @@ EXECUTOR_CLI: dict[str, list[str]] = {
     "claude-code": ["claude", "-p", "--dangerously-skip-permissions", "/{skill}"],
     "codex":       ["codex", "exec", "--full-auto", "{skill}"],
     "kiro":        ["kiro-cli", "chat", "--agent", "{skill}", "--no-interactive", "start"],
-    "cline":       [],  # Cline has no headless CLI — must be triggered manually
+    "gemini":      ["gemini", "-y", "-p", "/{skill}"],
 }
 
 

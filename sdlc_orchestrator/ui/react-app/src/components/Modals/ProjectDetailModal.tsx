@@ -23,17 +23,21 @@ const ProjectDetailModal = ({ project, isOpen, onClose, onRefresh }: ProjectDeta
   const [expandedPhases, setExpandedPhases] = useState<Set<string>>(new Set());
   const [expandedStories, setExpandedStories] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
+  const [phaseApprovals, setPhaseApprovals] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (isOpen && project) {
       // Auto-expand current phase
       setExpandedPhases(new Set([project.phase]));
+      // Initialize phase approvals from project
+      setPhaseApprovals(project.phase_approvals || {});
     }
   }, [isOpen, project]);
 
   if (!isOpen || !project) return null;
 
-  const togglePhase = (phaseName: string) => {
+  const togglePhase = (phaseName: string, e: React.MouseEvent) => {
+    e.stopPropagation();
     const newExpanded = new Set(expandedPhases);
     if (newExpanded.has(phaseName)) {
       newExpanded.delete(phaseName);
@@ -43,7 +47,8 @@ const ProjectDetailModal = ({ project, isOpen, onClose, onRefresh }: ProjectDeta
     setExpandedPhases(newExpanded);
   };
 
-  const toggleStory = (storyId: string) => {
+  const toggleStory = (storyId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
     const newExpanded = new Set(expandedStories);
     if (newExpanded.has(storyId)) {
       newExpanded.delete(storyId);
@@ -82,6 +87,21 @@ const ProjectDetailModal = ({ project, isOpen, onClose, onRefresh }: ProjectDeta
     }
   };
 
+  const handlePhaseApprovalToggle = async (phase: string, value: boolean) => {
+    const updated = { ...phaseApprovals, [phase]: value };
+    setPhaseApprovals(updated);
+
+    try {
+      await projectsApi.updatePhaseApprovals(project.name, updated);
+      onRefresh();
+    } catch (error) {
+      console.error('Failed to update phase approvals:', error);
+      alert('Failed to update phase approvals');
+      // Revert on error
+      setPhaseApprovals(phaseApprovals);
+    }
+  };
+
   const renderPhaseStatus = (phase: PhaseData) => {
     const statusClass = phase.status === 'done' ? 'done' : phase.status === 'in_progress' ? 'active' : 'pending';
     return <span className={`phase-status-badge ${statusClass}`}>{phase.status}</span>;
@@ -94,7 +114,7 @@ const ProjectDetailModal = ({ project, isOpen, onClose, onRefresh }: ProjectDeta
 
     return (
       <div key={story.id} className="story-item">
-        <div className="story-header" onClick={() => toggleStory(story.id)}>
+        <div className="story-header" onClick={(e) => toggleStory(story.id, e)}>
           <div className="story-info">
             <span className="story-id">{story.id}</span>
             <span className="story-name">{story.name}</span>
@@ -148,21 +168,22 @@ const ProjectDetailModal = ({ project, isOpen, onClose, onRefresh }: ProjectDeta
             <h2 className="modal-title">{project.display_name}</h2>
             <div className="project-detail-meta">
               {project.repo && (
-                <span className="meta-item">
-                  📦 {project.repo}
-                </span>
+                <span className="meta-item">📦 {project.repo}</span>
               )}
               {project.branch && (
-                <span className="meta-item">
-                  🌿 {project.branch}
-                </span>
+                <span className="meta-item">🌿 {project.branch}</span>
               )}
-              <span className={`status-badge status-${project.at_gate ? 'gate' : project.status}`}>
-                {project.status === 'done' ? 'Done' : project.at_gate ? 'At Gate' : 'Active'}
-              </span>
+              {project.at_gate && (
+                <span className="meta-item">⏸ Waiting for approval</span>
+              )}
             </div>
           </div>
-          <button className="modal-close-btn" onClick={onClose}>✕</button>
+          <div className="modal-header-badges">
+            <span className={`process-status-badge ${project.pipeline_status.status}`}>
+              {project.pipeline_status.status}
+            </span>
+            <button className="modal-close-btn" onClick={onClose}>✕</button>
+          </div>
         </div>
 
         <div className="modal-body">
@@ -170,7 +191,7 @@ const ProjectDetailModal = ({ project, isOpen, onClose, onRefresh }: ProjectDeta
           <div className="phases-section">
             {project.phases.map((phase) => (
               <div key={phase.name} className={`phase-detail phase-${phase.status}`}>
-                <div className="phase-detail-header" onClick={() => togglePhase(phase.name)}>
+                <div className="phase-detail-header" onClick={(e) => togglePhase(phase.name, e)}>
                   <div className="phase-title-row">
                     <span className="expand-icon">{expandedPhases.has(phase.name) ? '▼' : '▶'}</span>
                     <h4 className="phase-name">{PHASE_LABELS[phase.name] || phase.name}</h4>
@@ -228,78 +249,95 @@ const ProjectDetailModal = ({ project, isOpen, onClose, onRefresh }: ProjectDeta
             ))}
           </div>
 
-          {/* Actions */}
-          <div className="actions-section">
-            {project.at_gate && (
+          {/* Quick Actions Bar */}
+          {project.at_gate && (
+            <div className="quick-action-bar">
               <button
                 className="action-btn btn-approve"
                 onClick={() => handleAction('approve')}
                 disabled={loading}
               >
-                ✓ Approve
+                ✓ Approve {PHASE_LABELS[project.phase]}
               </button>
-            )}
+            </div>
+          )}
 
-            {project.held ? (
-              <button
-                className="action-btn btn-resume"
-                onClick={() => handleAction('resume')}
-                disabled={loading}
-              >
-                ▶ Resume
-              </button>
-            ) : (
-              <button
-                className="action-btn btn-hold"
-                onClick={() => handleAction('hold')}
-                disabled={loading}
-              >
-                ⏸ Hold
-              </button>
-            )}
+          {/* Settings Grid */}
+          <div className="settings-grid">
+            {/* Phase Approvals */}
+            <div className="settings-card">
+              <h3 className="settings-card-title">Phase Approval Gates</h3>
+              <div className="settings-card-note">
+                Toggle which phases require manual approval before proceeding.
+              </div>
+              <div className="approval-controls">
+                {Object.entries(PHASE_LABELS).map(([phase, label]) => (
+                  <label key={phase} className="approval-checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={phaseApprovals[phase] || false}
+                      onChange={(e) => handlePhaseApprovalToggle(phase, e.target.checked)}
+                      disabled={loading}
+                    />
+                    <span className="approval-phase-name">{label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
 
-            <button
-              className="action-btn btn-secondary"
-              onClick={() => handleAction('no-approvals')}
-              disabled={loading}
-            >
-              Skip Approvals
-            </button>
-
-            <button
-              className="action-btn btn-secondary"
-              onClick={() => handleAction('approvals')}
-              disabled={loading}
-            >
-              Restore Approvals
-            </button>
-
-            <a
-              href={project.state_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="action-btn btn-secondary"
-            >
-              View State JSON
-            </a>
-          </div>
-
-          {/* Process Status */}
-          <div className="process-status-section">
-            <div className="process-info">
-              <span className={`process-status-badge ${project.pipeline_status.status}`}>
-                {project.pipeline_status.status}
-              </span>
-              {project.pipeline_status.pid && (
-                <span className="process-meta">PID: {project.pipeline_status.pid}</span>
-              )}
-              {project.last_updated && (
-                <span className="process-meta">
-                  Updated: {new Date(project.last_updated).toLocaleString()}
-                </span>
-              )}
+            {/* Pipeline Controls */}
+            <div className="settings-card">
+              <h3 className="settings-card-title">Pipeline Controls</h3>
+              <div className="settings-card-note">
+                {project.last_updated && `Updated ${new Date(project.last_updated).toLocaleString()}`}
+                {project.pipeline_status.pid && ` • PID: ${project.pipeline_status.pid}`}
+              </div>
+              <div className="control-buttons">
+                {project.held ? (
+                  <button
+                    className="action-btn btn-resume"
+                    onClick={() => handleAction('resume')}
+                    disabled={loading}
+                  >
+                    ▶ Resume
+                  </button>
+                ) : (
+                  <button
+                    className="action-btn btn-hold"
+                    onClick={() => handleAction('hold')}
+                    disabled={loading}
+                  >
+                    ⏸ Hold Pipeline
+                  </button>
+                )}
+                <button
+                  className="action-btn btn-secondary"
+                  onClick={() => handleAction('no-approvals')}
+                  disabled={loading}
+                  title="Disable all approval gates - pipeline runs fully autonomous"
+                >
+                  Disable All Gates
+                </button>
+                <button
+                  className="action-btn btn-secondary"
+                  onClick={() => handleAction('approvals')}
+                  disabled={loading}
+                  title="Enable all approval gates - pipeline pauses at each phase"
+                >
+                  Enable All Gates
+                </button>
+                <a
+                  href={project.state_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="action-btn btn-secondary"
+                >
+                  View State JSON
+                </a>
+              </div>
             </div>
           </div>
+
         </div>
       </div>
     </div>

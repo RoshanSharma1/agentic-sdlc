@@ -17,7 +17,7 @@
   padding: 18px 24px;
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: 16px;
   z-index: 10;
 }
@@ -28,7 +28,7 @@
 }
 
 .modal-title {
-  font-size: 0.92rem;
+  font-size: 1.1rem;
   font-weight: 700;
   color: #f8fafc;
   margin-bottom: 8px;
@@ -47,6 +47,52 @@
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.modal-header-badges {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.status-badge {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  border: 2px solid transparent;
+}
+
+.status-badge.status-done {
+  background: #16a34a;
+  color: #fff;
+  border-color: #4ade80;
+}
+
+.status-badge.status-gate {
+  background: #d97706;
+  color: #fff;
+  border-color: #fbbf24;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.status-badge.status-in_progress {
+  background: #2563eb;
+  color: #fff;
+  border-color: #60a5fa;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    box-shadow: 0 2px 8px rgba(217, 119, 6, 0.3);
+  }
+  50% {
+    box-shadow: 0 2px 16px rgba(217, 119, 6, 0.6);
+  }
 }
 
 .modal-close-btn {
@@ -440,6 +486,50 @@
   transform: translateY(-1px);
 }
 
+/* Quick Action Bar */
+.quick-action-bar {
+  margin-bottom: 16px;
+}
+
+.quick-action-bar .action-btn {
+  width: 100%;
+}
+
+/* Settings Grid */
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.settings-card {
+  padding: 16px;
+  background: rgba(22, 27, 39, 0.5);
+  border: 1px solid #2d3748;
+  border-radius: 8px;
+}
+
+.settings-card-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #f1f5f9;
+  margin-bottom: 6px;
+}
+
+.settings-card-note {
+  font-size: 0.7rem;
+  color: #94a3b8;
+  margin-bottom: 14px;
+  line-height: 1.5;
+}
+
+.control-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 /* Actions */
 .actions-section {
   display: grid;
@@ -471,6 +561,7 @@
   background: #16a34a;
   color: #fff;
   grid-column: 1 / -1;
+  font-size: 0.82rem;
 }
 
 .btn-hold {
@@ -510,35 +601,107 @@
 }
 
 .process-status-badge {
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 0.7rem;
-  font-weight: 700;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 800;
   text-transform: uppercase;
+  letter-spacing: 0.08em;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  border: 2px solid transparent;
 }
 
 .process-status-badge.running {
-  background: #14291f;
-  color: #4ade80;
+  background: #16a34a;
+  color: #fff;
+  border-color: #4ade80;
+  animation: pulse-green 2s ease-in-out infinite;
 }
 
 .process-status-badge.stopped {
-  background: #7c2d12;
-  color: #f87171;
+  background: #dc2626;
+  color: #fff;
+  border-color: #f87171;
 }
 
 .process-status-badge.waiting {
-  background: #3b2a1a;
-  color: #fbbf24;
+  background: #d97706;
+  color: #fff;
+  border-color: #fbbf24;
 }
 
 .process-status-badge.held {
-  background: #1e3a5f;
-  color: #93c5fd;
+  background: #2563eb;
+  color: #fff;
+  border-color: #60a5fa;
+}
+
+.process-status-badge.done {
+  background: #16a34a;
+  color: #fff;
+  border-color: #4ade80;
+}
+
+.process-status-badge.stale {
+  background: #475569;
+  color: #cbd5e1;
+  border-color: #64748b;
+}
+
+@keyframes pulse-green {
+  0%, 100% {
+    box-shadow: 0 2px 8px rgba(22, 163, 74, 0.3);
+  }
+  50% {
+    box-shadow: 0 2px 16px rgba(22, 163, 74, 0.6);
+  }
 }
 
 .process-meta {
   color: #64748b;
+}
+
+/* Phase Approvals */
+.approval-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.approval-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #161b27;
+  border: 1px solid #2d3748;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.approval-checkbox-label:hover {
+  background: #1e2535;
+  border-color: #3b82f6;
+}
+
+.approval-checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #3b82f6;
+  flex-shrink: 0;
+}
+
+.approval-checkbox-label input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.approval-phase-name {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #cbd5e1;
 }
 
 /* Mobile */
@@ -552,6 +715,14 @@
   .modal-header {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .modal-header-badges {
+    justify-content: flex-start;
+  }
+
+  .settings-grid {
+    grid-template-columns: 1fr;
   }
 
   .phase-pipeline {

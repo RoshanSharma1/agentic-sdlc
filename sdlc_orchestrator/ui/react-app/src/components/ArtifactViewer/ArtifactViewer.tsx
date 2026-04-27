@@ -40,48 +40,13 @@ const ArtifactViewer = ({ projectName, artifactKey, artifactLabel, isOpen, onClo
 
   if (!isOpen) return null;
 
-  const renderMarkdown = (text: string) => {
-    // Simple markdown rendering for common patterns
-    return text
-      .split('\n')
-      .map((line, idx) => {
-        // Headers
-        if (line.startsWith('# ')) {
-          return <h1 key={idx} className="md-h1">{line.substring(2)}</h1>;
-        }
-        if (line.startsWith('## ')) {
-          return <h2 key={idx} className="md-h2">{line.substring(3)}</h2>;
-        }
-        if (line.startswith('### ')) {
-          return <h3 key={idx} className="md-h3">{line.substring(4)}</h3>;
-        }
-
-        // Lists
-        if (line.match(/^[-*]\s/)) {
-          return <li key={idx} className="md-li">{line.substring(2)}</li>;
-        }
-
-        // Code blocks
-        if (line.startsWith('```')) {
-          return null; // Handle in preprocessing
-        }
-
-        // Paragraphs
-        if (line.trim()) {
-          return <p key={idx} className="md-p">{line}</p>;
-        }
-
-        return <br key={idx} />;
-      });
-  };
-
   return (
     <div className="artifact-overlay" onClick={onClose}>
       <div className="artifact-modal" onClick={(e) => e.stopPropagation()}>
         <div className="artifact-header">
           <div className="artifact-header-content">
             <h2 className="artifact-title">{artifactLabel}</h2>
-            <span className="artifact-type">{artifactKey.replace(/_/g, ' ')}</span>
+            <span className="artifact-type">{artifactKey?.replace(/_/g, ' ') || ''}</span>
           </div>
           <button className="artifact-close" onClick={onClose}>✕</button>
         </div>

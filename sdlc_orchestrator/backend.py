@@ -1410,6 +1410,107 @@ _runtime_lock = threading.Lock()
 _default_runtime: OrchestratorRuntime | None = None
 
 
+def _auto_advance_if_no_approval_needed(
+    runtime: OrchestratorRuntime,
+    project_dir: Path,
+    record: ProjectRecord
+) -> None:
+    """
+    Check if current phase requires approval. If not, auto-merge PR and trigger next phase.
+    This makes the orchestrator fully autonomous when phase_approvals are disabled.
+    """
+    from sdlc_orchestrator.state_machine import WorkflowState, Phase
+    from sdlc_orchestrator.memory import MemoryManager
+    from sdlc_orchestrator.integrations.github import merge_pr, get_pr_status
+
+    try:
+        wf = WorkflowState(project_dir)
+
+        # Only proceed if we're at an approval gate
+        if not wf.is_approval_gate():
+            return
+
+        # Load spec to check phase_approvals config
+        spec = MemoryManager(project_dir).spec()
+        phase_approvals = spec.get("phase_approvals", {})
+
+        # Get current phase name (for implementation, check story-level approval)
+        current_phase = wf.phase.value
+        approval_required = phase_approvals.get(current_phase, True)
+
+        if approval_required:
+            # Human approval required - wait
+            return
+
+        # No approval required - auto-merge and advance
+        repo = spec.get("repo", "")
+        if not repo:
+            # No GitHub repo, just approve directly
+            wf.approve()
+
+            # Trigger next phase
+            runtime.spawn_for_project(
+                project_dir,
+                job_type=wf.phase.value,
+                preferred_agent=spec.get("executor"),
+                trigger="auto_advance",
+                allow_fallback=bool(spec.get("agent_fallback", True)),
+            )
+            return
+
+        # Determine branch name
+        from sdlc_orchestrator.utils import get_active_project
+        active_project = get_active_project(project_dir)
+        if not active_project:
+            return
+
+        # Map phase to branch suffix
+        branch_map = {
+            "requirement": "requirements",
+            "design": "design",
+            "planning": "plan",
+            "testing": "testing",
+            "documentation": "docs",
+        }
+
+        if current_phase == "implementation" and wf.current_story:
+            branch = f"sdlc-{active_project}-{wf.current_story.lower()}"
+        else:
+            suffix = branch_map.get(current_phase)
+            if not suffix:
+                return
+            branch = f"sdlc-{active_project}-{suffix}"
+
+        # Check if PR exists and is open
+        pr_status = get_pr_status(repo, branch)
+        if pr_status not in ("open", "approved"):
+            # PR doesn't exist or already merged
+            return
+
+        # Auto-merge the PR
+        merged = merge_pr(repo, branch)
+
+        if merged:
+            # Record approval event (merged state)
+            runtime.record_approval(
+                project_dir,
+                phase=current_phase,
+                source="auto_merge",
+                state="merged",
+                payload={
+                    "branch": branch,
+                    "repo": repo,
+                    "reason": "phase_approval_disabled",
+                },
+            )
+            # Approval event will trigger the next phase via APPROVAL_RECEIVED handler
+
+    except Exception as e:
+        # Don't crash the event handler if auto-advance fails
+        import sys
+        print(f"Auto-advance failed: {e}", file=sys.stderr)
+
+
 def _register_default_handlers(runtime: OrchestratorRuntime) -> None:
     if getattr(runtime, "_default_handlers_registered", False):
         return
@@ -1455,6 +1556,9 @@ def _register_default_handlers(runtime: OrchestratorRuntime) -> None:
                 agent=agent_name,
                 metadata={"run_id": event.payload.get("run_id")},
             )
+
+            # Auto-advance if approval not required for this phase
+            _auto_advance_if_no_approval_needed(runtime, Path(record.project_dir), record)
             return
 
         if registry.is_credit_error(combined):

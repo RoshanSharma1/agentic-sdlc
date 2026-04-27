@@ -3,7 +3,7 @@ description: A short description of what this project does.
 tech_stack: Node.js
 repo: owner/repo-name        # GitHub repo — used by gh CLI for issues/PRs/board
 slack_webhook: ""            # or set SLACK_WEBHOOK env var (keeps secret out of repo)
-executor: claude-code        # claude-code | codex | kiro | cline
+executor: claude-code        # claude-code | codex | kiro | gemini
 
 phase_approvals:             # Set to false to let the agent advance without waiting for PR approval
   requirement: true
