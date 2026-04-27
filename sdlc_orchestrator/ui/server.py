@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from sdlc_orchestrator import __version__
 from sdlc_orchestrator.agent_registry import AgentRegistry
@@ -31,6 +32,11 @@ from sdlc_orchestrator.state_machine import Phase, Status, WorkflowState
 from sdlc_orchestrator.utils import find_project_dir, get_active_project, project_slug, sdlc_home, update_gitignore
 
 app = FastAPI(title="Chorus")
+
+# Mount static files from React build
+_react_dist = Path(__file__).parent / "react-app" / "dist"
+if _react_dist.exists():
+    app.mount("/assets", StaticFiles(directory=str(_react_dist / "assets")), name="assets")
 
 # Injected at startup
 _project_dir: Path = Path(".")
