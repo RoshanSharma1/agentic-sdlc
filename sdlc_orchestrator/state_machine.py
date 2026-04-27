@@ -114,7 +114,7 @@ _LEGACY_MAP: dict[str, tuple[Phase | None, Status]] = {
 # Keep these names importable for callers that reference them
 APPROVAL_STATES = frozenset()   # use wf.is_approval_gate() instead
 EXECUTABLE_STATES = frozenset() # use wf.is_executable() instead
-PROJECT_SCOPED_ARTIFACT_KEYS = frozenset({"test_spec"})
+PROJECT_SCOPED_ARTIFACT_KEYS = frozenset({"test_spec", "test_cases", "test_results"})
 
 
 class WorkflowState:
@@ -137,6 +137,16 @@ class WorkflowState:
             self._migrate(data)
             _normalize_artifacts(self.project_dir, data)
             return data
+        try:
+            from sdlc_orchestrator.backend import get_runtime
+            record = get_runtime().store.get_project(project_slug(self.project_dir))
+            if record and record.workflow:
+                data = dict(record.workflow)
+                self._migrate(data)
+                _normalize_artifacts(self.project_dir, data)
+                return data
+        except Exception:
+            pass
         return self._defaults()
 
     @staticmethod
@@ -213,6 +223,11 @@ class WorkflowState:
     def save(self) -> None:
         self._data["last_updated"] = datetime.now(timezone.utc).isoformat()
         self.path.write_text(json.dumps(self._data, indent=2))
+        try:
+            from sdlc_orchestrator.backend import sync_project_from_disk
+            sync_project_from_disk(self.project_dir, workflow_data=self._data)
+        except Exception:
+            pass
 
     @staticmethod
     def _defaults() -> dict:
@@ -362,6 +377,50 @@ class WorkflowState:
             self._approve_story()
         else:
             self._advance_phase()
+
+    def transition_to(self, phase: Phase, status: Status = Status.IN_PROGRESS) -> None:
+        """Explicitly set the workflow phase/status and keep phase mirrors consistent."""
+        self._push_history()
+        self._data["phase"] = phase.value
+        self._data["status"] = status.value
+        if phase != Phase.DONE:
+            self._data["phases"].setdefault(phase.value, {"status": Status.PENDING.value, "stories": {}})
+            self._data["phases"][phase.value]["status"] = status.value
+        self._data["retry_count"] = 0
+        self.save()
+
+    def set_status(self, status: Status) -> None:
+        """Set status for the current phase without changing phase."""
+        self._push_history()
+        self._data["status"] = status.value
+        if self.phase != Phase.DONE:
+            self._data["phases"].setdefault(self.phase.value, {"status": Status.PENDING.value, "stories": {}})
+            self._data["phases"][self.phase.value]["status"] = status.value
+        self.save()
+
+    def mark_done(self) -> None:
+        """Mark the workflow complete."""
+        self._push_history()
+        if self.phase != Phase.DONE:
+            self._data["phases"].setdefault(self.phase.value, {"status": Status.PENDING.value, "stories": {}})
+            self._data["phases"][self.phase.value]["status"] = Status.DONE.value
+        self._data["phase"] = Phase.DONE.value
+        self._data["status"] = Status.DONE.value
+        self._data["retry_count"] = 0
+        self.save()
+
+    def set_branches(
+        self,
+        *,
+        base_branch: str | None = None,
+        current_branch: str | None = None,
+    ) -> None:
+        """Update tracked git branch metadata."""
+        if base_branch is not None:
+            self._data["base_branch"] = base_branch
+        if current_branch is not None:
+            self._data["current_branch"] = current_branch
+        self.save()
 
     def _advance_phase(self) -> None:
         """Complete current phase and start the next one."""

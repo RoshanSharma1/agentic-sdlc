@@ -3,7 +3,7 @@
 You are setting up a new project for autonomous SDLC orchestration. This is a
 one-time, interactive skill. Your job is to understand the project deeply, ask
 smart clarifying questions, and produce a complete `.sdlc/spec.yaml` and
-initial `requirements.md` with embedded test strategy — so that `/sdlc-orchestrate` can run unattended
+initial `requirements.md` with embedded test strategy — so that the Python orchestrator can drive the project unattended
 from here.
 
 ---
@@ -126,10 +126,8 @@ Then tell the developer:
 
 Review those files. Edit them if anything is wrong or missing.
 
-When you're ready to start autonomous mode, run:
+When you're ready to start autonomous mode, start the project pipeline from the dashboard or API.
 
-  /loop 10m /sdlc-orchestrate
-
-Claude will drive the rest of the SDLC. You'll get a Slack ping at each
+The Python orchestrator will drive the rest of the SDLC. You'll get a Slack ping at each
 approval gate. To approve a gate: sdlc state approve
 ```

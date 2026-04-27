@@ -1,0 +1,236 @@
+.project-card {
+  width: 100%;
+  text-align: left;
+  background: linear-gradient(135deg, #1a1f2e 0%, #13171f 100%);
+  border: 1px solid #2a3441;
+  border-radius: 12px;
+  padding: 16px;
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr) auto;
+  gap: 16px;
+  cursor: pointer;
+  color: #e2e8f0;
+  transition: all 0.2s ease;
+}
+
+.project-card:hover {
+  transform: translateY(-2px);
+  border-color: #3b82f6;
+  box-shadow: 0 8px 24px rgba(59, 130, 246, 0.15);
+}
+
+.project-mark {
+  border-radius: 10px;
+  background: linear-gradient(135deg, #1e3a5f, #0f1921);
+  border: 1px solid #2d5a8f;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 12px 8px;
+}
+
+.project-mark.done {
+  background: linear-gradient(135deg, #14532d, #0a1f15);
+  border-color: #166534;
+}
+
+.project-mark.gate {
+  background: linear-gradient(135deg, #7c2d12, #3d1506);
+  border-color: #9a3412;
+}
+
+.project-status-text {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #93c5fd;
+  text-align: center;
+  line-height: 1.2;
+}
+
+.project-mark.done .project-status-text {
+  color: #86efac;
+}
+
+.project-mark.gate .project-status-text {
+  color: #fdba74;
+}
+
+.project-progress-text {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: #f8fafc;
+  line-height: 1;
+}
+
+.project-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.project-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.project-name {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #f8fafc;
+  line-height: 1.4;
+  margin-bottom: 2px;
+}
+
+.project-phase-chip {
+  flex-shrink: 0;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 999px;
+  padding: 4px 8px;
+}
+
+.project-meta {
+  font-size: 0.75rem;
+  color: #64748b;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.project-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.project-stats strong {
+  color: #e2e8f0;
+  font-weight: 700;
+}
+
+.progress-bar {
+  height: 4px;
+  background: rgba(15, 23, 42, 0.8);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6, #22c55e);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.project-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.project-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.action-btn-card {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  font-weight: 600;
+}
+
+.action-btn-card:hover {
+  transform: scale(1.1);
+}
+
+.action-btn-card:active {
+  transform: scale(0.95);
+}
+
+.btn-approve {
+  background: linear-gradient(135deg, #16a34a, #15803d);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(22, 163, 74, 0.3);
+}
+
+.btn-approve:hover {
+  background: linear-gradient(135deg, #15803d, #166534);
+  box-shadow: 0 4px 12px rgba(22, 163, 74, 0.4);
+}
+
+.btn-hold {
+  background: linear-gradient(135deg, #ea580c, #c2410c);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(234, 88, 12, 0.3);
+}
+
+.btn-hold:hover {
+  background: linear-gradient(135deg, #c2410c, #9a3412);
+  box-shadow: 0 4px 12px rgba(234, 88, 12, 0.4);
+}
+
+.btn-resume {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+}
+
+.btn-resume:hover {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+}
+
+.project-meta-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  font-size: 0.7rem;
+  color: #64748b;
+}
+
+@media (max-width: 768px) {
+  .project-card {
+    grid-template-columns: 1fr;
+  }
+
+  .project-title-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .project-side {
+    min-width: 0;
+    align-items: flex-start;
+  }
+
+  .project-meta-side {
+    align-items: flex-start;
+  }
+}

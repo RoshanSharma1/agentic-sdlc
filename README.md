@@ -4,9 +4,9 @@ An **AI agent extension** that turns any supported AI coding agent into an auton
 
 > **What kind of extension is this?**
 > SDLC Orchestrator extends your AI coding agent with three components:
-> - **Skills** — custom slash commands (e.g. `/sdlc-orchestrate`) that give the agent new behaviors
+> - **Skills** — phase-specific commands (e.g. `/sdlc-start`, `/sdlc-requirement`) that give the agent new behaviors
 > - **Hooks** — event-driven automation that reacts to what the agent does (e.g. detecting test failures)
-> - **CLI** (`sdlc`) — a state management layer the agent calls to track workflow progress
+> - **CLI** (`sdlc`) — a state management layer plus Python runtime that tracks workflow progress and dispatches phase agents
 
 > **Supported agents:** Claude Code, Codex, Kiro, Cline
 > Set `executor` in `spec.yaml` to one of: `claude-code`, `codex`, `kiro`, `cline`
@@ -114,22 +114,15 @@ Pass `--no-approvals` to let the agent advance through all phases without waitin
 
 ---
 
-### Step 3 — Run the loop
+### Step 3 — Start the pipeline
 
-After `/sdlc-start` completes, paste the loop command it gives you into a dedicated terminal tab:
+After `/sdlc-start` completes, start the pipeline from the dashboard or API:
 
 ```bash
-# Claude Code
-while true; do claude -p "/sdlc-orchestrate"; sleep 600; done
-
-# Codex
-while true; do codex exec --full-auto "/sdlc-orchestrate"; sleep 600; done
-
-# Kiro
-while true; do kiro-cli chat --agent sdlc-orchestrate --no-interactive start; sleep 600; done
+curl -X POST http://localhost:8765/api/projects/<project>/start-pipeline
 ```
 
-Each iteration is a fresh agent process — no context bleed between ticks. Leave it running and walk away.
+The Python orchestrator reads workflow state and spawns only the phase agent it needs.
 
 ---
 
@@ -275,9 +268,7 @@ sdlc init .
 
 The orchestrator resumes safely from the last committed artifact — it never re-does completed work.
 
-```
-/sdlc-orchestrate
-```
+Restart the pipeline for the active project from the dashboard or `POST /api/projects/<project>/start-pipeline`.
 
 ### Switching agents mid-project
 
@@ -290,8 +281,8 @@ executor: kiro
 # 2. Re-run init to install skills for the new agent
 sdlc init .
 
-# 3. Open the new agent — reads the same state.json and continues
-/sdlc-orchestrate
+# 3. Start the pipeline again for the project
+curl -X POST http://localhost:8765/api/projects/<project>/start-pipeline
 ```
 
 ---
@@ -436,7 +427,6 @@ Creates labels, a Projects v2 board, workflow automations, and one issue per SDL
 | Skill | Who uses it | When |
 |-------|-------------|------|
 | `/sdlc-start` | **You** | Once — kicks off everything |
-| `/sdlc-orchestrate` | Loop / agent | Every tick automatically |
 | `/sdlc-setup` | You (advanced) | Only to redo configuration |
 | `/sdlc-requirement` | You (advanced) | Run a single phase manually |
 | `/sdlc-design` | You (advanced) | Run a single phase manually |

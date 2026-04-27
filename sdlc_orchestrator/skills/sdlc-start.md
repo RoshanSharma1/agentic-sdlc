@@ -194,10 +194,9 @@ Branch structure:
 
 Working directory: worktree/<name>/
 
-Run the orchestration loop from the worktree:
+Start the pipeline for the worktree:
 
-  cd worktree/<name>
-  while kiro-cli chat --agent sdlc-orchestrate --no-interactive --trust-all-tools start; do sleep 600; done
+  POST /api/projects/<name>/start-pipeline
 
 Approve each phase by merging the PR on GitHub, or: sdlc state approve
 ```

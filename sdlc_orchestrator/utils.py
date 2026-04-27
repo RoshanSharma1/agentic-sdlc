@@ -34,17 +34,31 @@ def get_active_project(project_dir: Path) -> str:
 
 def list_projects(project_dir: Path) -> list[str]:
     """Return project slugs visible from this directory."""
-    names: set[str] = set()
-    if (project_dir / ".sdlc" / "spec.yaml").exists():
-        names.add(project_slug(project_dir))
+    try:
+        from sdlc_orchestrator.backend import get_runtime, sync_project_from_disk
+        root = project_dir.resolve()
+        if (root / ".sdlc" / "spec.yaml").exists() or (root / ".sdlc" / "workflow" / "state.json").exists():
+            sync_project_from_disk(root)
 
-    worktree_dir = project_dir / "worktree"
-    if worktree_dir.exists():
-        for child in worktree_dir.iterdir():
-            if child.is_dir() and (child / ".sdlc" / "spec.yaml").exists():
-                names.add(project_slug(child))
+        worktree_dir = root / "worktree"
+        if worktree_dir.exists():
+            for child in worktree_dir.iterdir():
+                if child.is_dir() and (child / ".sdlc").exists():
+                    sync_project_from_disk(child)
 
-    return sorted(names)
+        return sorted(record.slug for record in get_runtime().store.list_projects() if not record.archived_at)
+    except Exception:
+        names: set[str] = set()
+        if (project_dir / ".sdlc" / "spec.yaml").exists():
+            names.add(project_slug(project_dir))
+
+        worktree_dir = project_dir / "worktree"
+        if worktree_dir.exists():
+            for child in worktree_dir.iterdir():
+                if child.is_dir() and (child / ".sdlc" / "spec.yaml").exists():
+                    names.add(project_slug(child))
+
+        return sorted(names)
 
 
 def sdlc_home(project_dir: Path) -> Path:

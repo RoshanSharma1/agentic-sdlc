@@ -1,0 +1,128 @@
+/* Folder Browser Overlay */
+.fb-overlay {
+  position: absolute;
+  inset: 0;
+  background: var(--surface);
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+  animation: slideIn 0.2s ease;
+}
+
+.fb-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(135deg, #e4f0f5, #f4f8fa);
+}
+
+.fb-path {
+  font-size: 0.65rem;
+  color: var(--accent-deep);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  font-family: monospace;
+}
+
+.fb-up {
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.fb-up:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.fb-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fb-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.fb-list::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 2px;
+}
+
+.fb-item {
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.76rem;
+  color: var(--ink);
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fb-item:hover {
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+}
+
+.fb-footer {
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 8px;
+  background: var(--bg-soft);
+}
+
+.fb-select {
+  flex: 1;
+  background: linear-gradient(135deg, var(--accent), #4e88a7);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  padding: 9px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.fb-select:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+.fb-cancel {
+  background: var(--surface-2);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 14px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.fb-cancel:hover {
+  background: var(--line);
+  color: var(--ink);
+}

@@ -18,6 +18,7 @@ def project():
 def project_list():
     """List all projects and their state."""
     from sdlc_orchestrator.state_machine import WorkflowState
+    from sdlc_orchestrator.backend import get_runtime
     project_dir = require_project()
     projects = list_projects(project_dir)
 
@@ -28,7 +29,9 @@ def project_list():
     for name in projects:
         wf_state = "?"
         try:
-            wf_state = WorkflowState(project_dir).label()
+            record = get_runtime().store.get_project(name)
+            target_dir = Path(record.project_dir) if record else project_dir
+            wf_state = WorkflowState(target_dir).label()
         except Exception:
             pass
         click.echo(f"  {name}  [{wf_state}]")
@@ -57,5 +60,11 @@ def project_close(force: bool):
         archive = home / "workflow" / f"state.{ts}.archived.json"
         shutil.copy2(state_file, archive)
         console.print(f"  Archived state → {archive.name}")
+
+    try:
+        from sdlc_orchestrator.backend import get_runtime
+        get_runtime().archive_project(project_dir)
+    except Exception:
+        pass
 
     console.print(f"[green]✓[/green] Project '{slug}' closed.")

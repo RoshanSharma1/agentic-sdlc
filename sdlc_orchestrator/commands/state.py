@@ -4,23 +4,24 @@ import sys
 
 import click
 
+from sdlc_orchestrator.backend import get_workflow_service
 from sdlc_orchestrator.state_machine import (
     Phase, Status, StoryStatus, WorkflowState, _LEGACY_MAP,
     PHASE_LABELS, STATUS_LABELS,
 )
 from sdlc_orchestrator.memory import MemoryManager
-from sdlc_orchestrator.commands import console, make_workflow_state, require_project
+from sdlc_orchestrator.commands import console, require_project
 
 
 @click.group()
 def state():
-    """Read and update workflow state (used by Claude during /sdlc-orchestrate)."""
+    """Read and update workflow state for the Python orchestrator."""
     pass
 
 
 @state.command("get")
 def state_get():
-    """Print current state — machine-readable output for Claude."""
+    """Print current state — machine-readable output for phase agents."""
     project_dir = require_project()
     wf = WorkflowState(project_dir)
     spec = MemoryManager(project_dir).spec()
@@ -69,94 +70,47 @@ def state_get():
 def state_set(value: str, force: bool):
     """Set phase/status. Accepts phase name, status name, or legacy state string."""
     project_dir = require_project()
-    wf = make_workflow_state(project_dir)
+    service = get_workflow_service()
 
-    # Blocked shorthand
+    try:
+        wf = service.set_value(project_dir, value, blocked_reason="manually set via CLI")
+    except ValueError:
+        valid_phases = [p.value for p in Phase]
+        valid_statuses = [s.value for s in Status]
+        valid_legacy = sorted(_LEGACY_MAP.keys())
+        click.echo(
+            f"Unknown value: {value}\n"
+            f"Phases: {', '.join(valid_phases)}\n"
+            f"Statuses: {', '.join(valid_statuses)}\n"
+            f"Legacy: {', '.join(valid_legacy)}",
+            err=True,
+        )
+        sys.exit(1)
+
     if value == "blocked":
-        wf.set_blocked("manually set via CLI")
         click.echo("ok: blocked")
         return
-
-    # Legacy flat state → new phase/status
-    if value in _LEGACY_MAP:
-        phase, status = _LEGACY_MAP[value]
-        if phase == Phase.DONE or value == "done":
-            wf._data["phase"] = Phase.DONE.value
-            wf._data["status"] = Status.DONE.value
-            wf.save()
-            click.echo("ok: done")
-            return
-        if phase:
-            wf._data["phase"] = phase.value
-        wf._data["status"] = status.value
-        # keep phases dict in sync
-        if phase and phase != Phase.DONE:
-            wf._data["phases"][phase.value]["status"] = status.value
-        wf.save()
-        click.echo(f"ok: {wf.phase.value}:{wf.status.value}")
+    if wf.phase == Phase.DONE and wf.status == Status.DONE and value in {Status.DONE.value, "done"}:
+        click.echo("ok: done")
         return
-
-    # New phase name (e.g. "design", "implementation")
-    try:
-        phase = Phase(value)
-        wf._data["phase"] = phase.value
-        wf._data["status"] = Status.IN_PROGRESS.value
-        if phase != Phase.DONE:
-            wf._data["phases"][phase.value]["status"] = Status.IN_PROGRESS.value
-        wf.save()
-        click.echo(f"ok: {phase.value}:in_progress")
-        return
-    except ValueError:
-        pass
-
-    # New status name (e.g. "awaiting_approval", "in_progress")
-    try:
-        status = Status(value)
-        if status == Status.AWAITING_APPROVAL:
-            wf.submit_for_approval()
-        elif status == Status.IN_PROGRESS:
-            wf.unblock() if wf.status == Status.BLOCKED else None
-            wf._data["status"] = Status.IN_PROGRESS.value
-            wf.save()
-        elif status == Status.DONE:
-            wf._data["phase"] = Phase.DONE.value
-            wf._data["status"] = Status.DONE.value
-            wf.save()
-        else:
-            wf._data["status"] = status.value
-            wf.save()
-        click.echo(f"ok: {wf.phase.value}:{wf.status.value}")
-        return
-    except ValueError:
-        pass
-
-    valid_phases = [p.value for p in Phase]
-    valid_statuses = [s.value for s in Status]
-    valid_legacy = sorted(_LEGACY_MAP.keys())
-    click.echo(
-        f"Unknown value: {value}\n"
-        f"Phases: {', '.join(valid_phases)}\n"
-        f"Statuses: {', '.join(valid_statuses)}\n"
-        f"Legacy: {', '.join(valid_legacy)}",
-        err=True,
-    )
-    sys.exit(1)
+    click.echo(f"ok: {wf.phase.value}:{wf.status.value}")
 
 
 @state.command("approve")
 def state_approve():
     """Advance past the current approval gate."""
     project_dir = require_project()
-    wf = make_workflow_state(project_dir)
+    service = get_workflow_service()
+    wf = service.load(project_dir)
 
     if not wf.is_approval_gate():
         click.echo(f"Not an approval gate: {wf.phase.value}:{wf.status.value}", err=True)
         sys.exit(1)
 
-    wf.approve()
+    wf = service.approve(project_dir)
     click.echo(f"approved: {wf.phase.value}:{wf.status.value}")
     console.print(f"[green]✓ Approved.[/green] → {wf.label()}")
-    console.print("  Tell Claude to continue (/sdlc-orchestrate).")
+    console.print("  The Python orchestrator can now dispatch the next phase agent.")
 
 
 @state.command("history")

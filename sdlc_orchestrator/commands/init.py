@@ -75,10 +75,50 @@ def ensure_global_memory() -> None:
             )
 
 
-def trigger_agent(project_dir: Path, skill: str = "sdlc-orchestrate") -> subprocess.CompletedProcess | None:
+def trigger_agent(project_dir: Path, skill: str | None = None, use_fallback: bool | None = None) -> subprocess.CompletedProcess | None:
+    """
+    Trigger agent execution with optional automatic fallback.
+
+    Args:
+        project_dir: Project directory
+        skill: Skill to execute
+        use_fallback: If True, use fallback; if None, read from spec.yaml
+
+    Returns:
+        CompletedProcess or None
+    """
+    from sdlc_orchestrator.backend import resolve_phase_skill
     from sdlc_orchestrator.memory import EXECUTOR_CLI, MemoryManager, executor_config
+    from sdlc_orchestrator.agent_registry import AgentRegistry
+
     spec = MemoryManager(project_dir).spec()
     executor = spec.get("executor", "claude-code")
+    if not skill:
+        skill = resolve_phase_skill(WorkflowState(project_dir).phase.value)
+
+    # Check spec.yaml for fallback preference if not explicitly set
+    if use_fallback is None:
+        use_fallback = spec.get("agent_fallback", True)
+
+    if use_fallback:
+        # Use registry with automatic fallback
+        registry = AgentRegistry(project_dir)
+        success, agent_used, error = registry.execute_with_fallback(
+            skill=skill,
+            preferred_agent=executor,
+        )
+
+        if success and agent_used:
+            console.print(f"[green]✓[/green] Executed with {agent_used}")
+            # Create a fake CompletedProcess for backward compatibility
+            class FakeResult:
+                returncode = 0
+            return FakeResult()  # type: ignore
+        else:
+            console.print(f"[red]✗[/red] All agents failed: {error}")
+            return None
+
+    # Legacy single-agent execution
     cmd_template = EXECUTOR_CLI.get(executor, EXECUTOR_CLI["claude-code"])
     if not cmd_template:
         return None
@@ -155,16 +195,17 @@ def init_sdlc_dirs(project_dir: Path) -> None:
 
 
 def set_initial_state(project_dir: Path, phase: str = "requirement") -> None:
+    from sdlc_orchestrator.backend import get_workflow_service
+
     wf = WorkflowState(project_dir)
     try:
         p = Phase(phase)
     except ValueError:
         p = Phase.REQUIREMENT
-    wf._data["phase"] = p.value
-    wf._data["status"] = Status.IN_PROGRESS.value
-    if p != Phase.DONE:
-        wf._data.setdefault("phases", {})[p.value] = {"status": Status.IN_PROGRESS.value}
-    wf.save()
+    if wf.phase == p and wf.status == Status.IN_PROGRESS and not wf._data.get("history"):
+        wf.save()
+        return
+    get_workflow_service().initialize(project_dir, p)
 
 
 def setup_github_board(project_dir: Path, spec: dict) -> None:
@@ -253,7 +294,7 @@ def common_setup(project_dir: Path, spec: dict, is_new: bool, upgrade_skills: bo
     console.print(f"  [green]✓[/green] {settings_rel}/settings.json")
 
     install_global_skills(force=upgrade_skills, executor=executor)
-    console.print(f"  [green]✓[/green] skills → {skills_dir}/  (including /sdlc-orchestrate)")
+    console.print(f"  [green]✓[/green] skills → {skills_dir}/")
 
     update_gitignore(project_dir)
     console.print("  [green]✓[/green] .gitignore")

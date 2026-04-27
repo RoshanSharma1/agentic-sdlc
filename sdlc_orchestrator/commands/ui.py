@@ -10,7 +10,7 @@ import click
 @click.option("--port", default=7842, show_default=True, help="Port to listen on")
 @click.option("--no-browser", is_flag=True, help="Don't open browser automatically")
 def ui(port, no_browser):
-    """Launch the SDLC dashboard."""
+    """Launch the Chorus dashboard."""
     try:
         import uvicorn
     except ImportError:
@@ -25,7 +25,7 @@ def ui(port, no_browser):
     srv._chat_dir = project_dir
 
     url = f"http://localhost:{port}"
-    click.echo(f"SDLC Dashboard → {url}")
+    click.echo(f"Chorus → {url}")
     if not no_browser:
         webbrowser.open(url)
 

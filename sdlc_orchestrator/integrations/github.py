@@ -25,6 +25,52 @@ def is_available() -> bool:
         return False
 
 
+def list_repositories(limit: int = 100) -> list[dict[str, str]]:
+    try:
+        r = _gh(
+            "repo",
+            "list",
+            "--limit",
+            str(limit),
+            "--json",
+            "name,nameWithOwner,url,isPrivate,description,viewerPermission",
+        )
+        repos = json.loads(r.stdout)
+        return [
+            {
+                "name": item.get("name", ""),
+                "full_name": item.get("nameWithOwner", ""),
+                "url": item.get("url", ""),
+                "description": item.get("description") or "",
+                "visibility": "private" if item.get("isPrivate") else "public",
+                "permission": item.get("viewerPermission") or "",
+            }
+            for item in repos
+            if item.get("nameWithOwner")
+        ]
+    except (subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError):
+        return []
+
+
+def create_repository(name: str, description: str = "", private: bool = True) -> Optional[dict[str, str]]:
+    visibility = "private" if private else "public"
+    args = ["repo", "create", name, f"--{visibility}", "--json", "name,nameWithOwner,url,isPrivate,description"]
+    if description:
+        args.extend(["--description", description])
+    try:
+        r = _gh(*args)
+        data = json.loads(r.stdout)
+        return {
+            "name": data.get("name", ""),
+            "full_name": data.get("nameWithOwner", ""),
+            "url": data.get("url", ""),
+            "description": data.get("description") or "",
+            "visibility": "private" if data.get("isPrivate") else "public",
+        }
+    except (subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError):
+        return None
+
+
 # ── Labels ────────────────────────────────────────────────────────────────────
 
 SDLC_LABELS: dict[str, str] = {

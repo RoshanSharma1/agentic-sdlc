@@ -9,6 +9,7 @@ from sdlc_orchestrator.commands.init import init
 from sdlc_orchestrator.commands.project import project
 from sdlc_orchestrator.commands.ops import status, notify, watch, webhook, tick, relink
 from sdlc_orchestrator.commands.ui import ui
+from sdlc_orchestrator.commands.agent import agent
 
 
 @click.group()
@@ -30,3 +31,4 @@ cli.add_command(webhook)
 cli.add_command(tick)
 cli.add_command(relink)
 cli.add_command(ui)
+cli.add_command(agent)

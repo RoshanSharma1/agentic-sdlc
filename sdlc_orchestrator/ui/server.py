@@ -1,12 +1,14 @@
-"""Minimal FastAPI server for the SDLC dashboard."""
+"""Minimal FastAPI server for the Chorus dashboard."""
 from __future__ import annotations
 
 import asyncio
+import json
 import inspect
 import re
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -15,11 +17,20 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
 from sdlc_orchestrator import __version__
+from sdlc_orchestrator.agent_registry import AgentRegistry
+from sdlc_orchestrator.backend import (
+    get_runtime,
+    get_workflow_service,
+    record_approval_event,
+    sync_project_from_disk,
+)
+from sdlc_orchestrator.commands.init import detect_remote_repo, init_sdlc_dirs, set_initial_state
+from sdlc_orchestrator.integrations import github
+from sdlc_orchestrator.memory import DEFAULT_EXECUTOR, EXECUTOR_CLI, MemoryManager
 from sdlc_orchestrator.state_machine import Phase, Status, WorkflowState
-from sdlc_orchestrator.memory import MemoryManager
-from sdlc_orchestrator.utils import get_active_project, sdlc_home
+from sdlc_orchestrator.utils import find_project_dir, get_active_project, project_slug, sdlc_home, update_gitignore
 
-app = FastAPI(title="SDLC Dashboard")
+app = FastAPI(title="Chorus")
 
 # Injected at startup
 _project_dir: Path = Path(".")
@@ -30,21 +41,47 @@ _chat_lock = threading.Lock()
 _jobs: dict[str, dict] = {}
 _jobs_dir: Path = Path.home() / ".sdlc" / "chat-jobs"
 _jobs_dir.mkdir(parents=True, exist_ok=True)
+_agent_status_cache_lock = threading.Lock()
+_agent_status_cache_ttl_seconds = 300.0
+_agent_status_cache_payload: dict[str, Any] | None = None
+_agent_status_cache_updated_at = 0.0
+
+CHAT_EXECUTOR_CONFIG: dict[str, dict[str, Any]] = {
+    "claude-code": {
+        "label": "Claude Code",
+        "cmd": ["claude", "-p", "--dangerously-skip-permissions"],
+        "resume": False,
+    },
+    "codex": {
+        "label": "Codex",
+        "cmd": ["codex", "exec", "--full-auto"],
+        "resume": False,
+    },
+    "kiro": {
+        "label": "Kiro",
+        "cmd": ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"],
+        "resume": True,
+    },
+}
 
 
 def _runtime_meta() -> dict[str, str]:
     package_file = Path(inspect.getfile(__import__("sdlc_orchestrator"))).resolve()
     package_root = package_file.parent
-    dashboard_file = (Path(__file__).parent / "dashboard.html").resolve()
+    ui_entry_file = (Path(__file__).parent / "react-app" / "dist" / "index.html").resolve()
     source_mode = "installed" if "site-packages" in package_root.parts else "repo"
     return {
         "version": __version__,
         "source_mode": source_mode,
         "package_root": str(package_root),
         "server_file": str(Path(__file__).resolve()),
-        "dashboard_file": str(dashboard_file),
+        "ui_entry_file": str(ui_entry_file),
         "project_dir": str(_project_dir.resolve()),
     }
+
+
+def _agent_status_cache_now() -> float:
+    return time.monotonic()
 
 
 def _job_path(job_id: str) -> Path:
@@ -70,7 +107,6 @@ def _load_job(job_id: str) -> dict | None:
 
 
 def _append_job(job_id: str, line: str | None = None, done: bool = False):
-    import json
     with open(_job_path(job_id), "a") as f:
         if line is not None:
             f.write(json.dumps({"line": line}) + "\n")
@@ -81,12 +117,17 @@ def _append_job(job_id: str, line: str | None = None, done: bool = False):
 # ── Filesystem browse ─────────────────────────────────────────────────────────
 
 @app.get("/api/fs/browse")
-def fs_browse(path: str = "~"):
+def fs_browse(path: str = "~", include_files: bool = False):
     p = Path(path).expanduser().resolve()
     if not p.is_dir():
         p = p.parent
     dirs = sorted([d.name for d in p.iterdir() if d.is_dir() and not d.name.startswith('.')], key=str.lower)
-    return {"path": str(p), "parent": str(p.parent), "dirs": dirs}
+    files = sorted([f.name for f in p.iterdir() if f.is_file() and not f.name.startswith('.')], key=str.lower) if include_files else []
+    entries = (
+        [{"name": name, "path": str(p / name), "is_dir": True, "is_file": False} for name in dirs] +
+        [{"name": name, "path": str(p / name), "is_dir": False, "is_file": True} for name in files]
+    )
+    return {"path": str(p), "parent": str(p.parent), "dirs": dirs, "files": files, "entries": entries}
 
 
 @app.get("/api/meta")
@@ -94,11 +135,122 @@ def runtime_meta():
     return _runtime_meta()
 
 
+def _build_agent_status_payload() -> dict[str, Any]:
+    from sdlc_orchestrator.agent_status_checker import get_agent_usage_stats
+
+    statuses = get_agent_usage_stats(_project_dir)
+    recommended = None
+    for agent_name in ["claude-code", "kiro", "codex"]:
+        status = statuses.get(agent_name)
+        if status and status.state == "ready":
+            recommended = agent_name
+            break
+    if recommended is None:
+        for agent_name in ["claude-code", "kiro", "codex"]:
+            status = statuses.get(agent_name)
+            if status and status.available:
+                recommended = agent_name
+                break
+
+    return {
+        "agents": {
+            name: {
+                "name": status.name,
+                "available": status.available,
+                "installed": status.installed,
+                "authenticated": status.authenticated,
+                "exhausted": status.exhausted,
+                "state": status.state,
+                "next_reset_at": status.next_reset_at,
+                "version": status.version,
+                "credits_remaining": status.credits_remaining,
+                "credits_limit": status.credits_limit,
+                "subscription_tier": status.subscription_tier,
+                "rate_limit_remaining": status.rate_limit_remaining,
+                "auth_method": status.auth_method,
+                "account_label": status.account_label,
+                "status_command": status.status_command,
+                "interactive_status_command": status.interactive_status_command,
+                "interactive_usage_command": status.interactive_usage_command,
+                "status_source": status.status_source,
+                "status_details": status.status_details,
+                "notes": status.notes,
+                "error_message": status.error_message,
+                "last_checked": status.last_checked,
+                # Usage stats
+                "total_api_calls": status.total_api_calls,
+                "total_tokens": status.total_tokens,
+                "total_cost": status.total_cost,
+                "daily_usage": {
+                    "api_calls": status.daily_usage.api_calls,
+                    "tokens_used": status.daily_usage.tokens_used,
+                    "cost_usd": status.daily_usage.cost_usd,
+                    "period": "Today"
+                } if status.daily_usage else None,
+                "weekly_usage": {
+                    "api_calls": status.weekly_usage.api_calls,
+                    "tokens_used": status.weekly_usage.tokens_used,
+                    "cost_usd": status.weekly_usage.cost_usd,
+                    "period": "Last 7 days"
+                } if status.weekly_usage else None,
+                "monthly_usage": {
+                    "api_calls": status.monthly_usage.api_calls,
+                    "tokens_used": status.monthly_usage.tokens_used,
+                    "cost_usd": status.monthly_usage.cost_usd,
+                    "period": "Last 30 days"
+                } if status.monthly_usage else None,
+                "next_reset_date": status.next_reset_date,
+                "billing_cycle": status.billing_cycle,
+                "usage_windows": [
+                    {
+                        "label": window.label,
+                        "used_percentage": window.used_percentage,
+                        "remaining_percentage": window.remaining_percentage,
+                        "reset_at": window.reset_at,
+                        "exhausted": window.exhausted,
+                    }
+                    for window in status.usage_windows
+                ],
+            }
+            for name, status in statuses.items()
+        },
+        "recommended_agent": recommended,
+        "total_available": sum(1 for s in statuses.values() if s.available),
+    }
+
+
+@app.get("/api/agents/status")
+def get_global_agent_status():
+    """Get cached global agent status, refreshing every 5 minutes."""
+    global _agent_status_cache_payload, _agent_status_cache_updated_at
+
+    now = _agent_status_cache_now()
+    with _agent_status_cache_lock:
+        if (
+            _agent_status_cache_payload is not None
+            and now - _agent_status_cache_updated_at < _agent_status_cache_ttl_seconds
+        ):
+            return _agent_status_cache_payload
+
+    payload = _build_agent_status_payload()
+
+    with _agent_status_cache_lock:
+        _agent_status_cache_payload = payload
+        _agent_status_cache_updated_at = _agent_status_cache_now()
+        return _agent_status_cache_payload
+
+
 # ── Chat CWD ──────────────────────────────────────────────────────────────────
 
 @app.get("/api/chat/cwd")
 def get_cwd():
     return {"cwd": str(_chat_dir)}
+
+
+@app.get("/api/chat/meta")
+def get_chat_meta(executor: str | None = None):
+    meta = _resolve_chat_executor(_chat_dir, executor)
+    return {"cwd": str(_chat_dir), **meta}
 
 
 @app.post("/api/chat/cwd")
@@ -185,6 +337,12 @@ def _global_repo_roots() -> list[Path]:
 
 def _resolve_project_dir(name: str) -> Path:
     """Resolve a dashboard project slug to the worktree or archive that owns its .sdlc state."""
+    record = get_runtime().store.get_project(name)
+    if record:
+        candidate = Path(record.project_dir)
+        if candidate.exists() and _has_project_state(candidate):
+            return candidate
+
     for root in _global_repo_roots():
         worktree_root = root / "worktree"
         if worktree_root.exists():
@@ -245,10 +403,37 @@ def _known_archive_entries() -> list[tuple[Path, str]]:
                 entries.append((child, child.name))
     return entries
 
+
+def _refresh_project_catalog() -> None:
+    runtime = get_runtime()
+    for project_dir, _ in _known_project_entries():
+        try:
+            sync_project_from_disk(project_dir)
+        except Exception:
+            continue
+    for project_dir, _ in _known_archive_entries():
+        try:
+            runtime.archive_project(project_dir)
+        except Exception:
+            continue
+
+
+def _db_project_entries() -> list[tuple[Path, str, bool]]:
+    _refresh_project_catalog()
+    entries: list[tuple[Path, str, bool]] = []
+    seen: set[Path] = set()
+    for record in get_runtime().store.list_projects():
+        project_dir = Path(record.project_dir)
+        if project_dir in seen or not project_dir.exists() or not _has_project_state(project_dir):
+            continue
+        seen.add(project_dir)
+        entries.append((project_dir, record.slug, bool(record.archived_at)))
+    return entries
+
 def _build_sdlc_context() -> str:
     """Build a brief SDLC state summary to inject as context."""
     try:
-        entries = _known_project_entries()
+        entries = [(project_dir, slug) for project_dir, slug, archived in _db_project_entries() if not archived]
         if not entries:
             return ""
         lines = ["Current SDLC project states (as of now):"]
@@ -266,6 +451,489 @@ def _build_sdlc_context() -> str:
         return ""
 
 
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9-]+", "-", value.lower()).strip("-")
+    return re.sub(r"-{2,}", "-", slug)
+
+
+def _ui_repo_root() -> Path:
+    project_dir = _project_dir.resolve()
+    if project_dir.name == "worktree":
+        return project_dir.parent
+    if project_dir.parent.name == "worktree":
+        return project_dir.parent.parent
+    return project_dir
+
+
+def _approval_map(enabled: bool) -> dict[str, bool]:
+    phases = ["requirement", "design", "planning", "implementation", "testing", "documentation"]
+    return {phase: enabled for phase in phases}
+
+
+def _known_agent_order(preferred: str, requested: list[str]) -> list[str]:
+    order: list[str] = []
+    if preferred:
+        order.append(preferred)
+    for name in requested:
+        if name and name not in order:
+            order.append(name)
+    for name in ("claude-code", "kiro", "codex", "cline"):
+        if name not in order:
+            order.append(name)
+    return order
+
+
+def _project_template(project_name: str, description: str, tech_stack: str) -> str:
+    lines = [f"# Project: {project_name}"]
+    if description:
+        lines.extend(["", description])
+    if tech_stack:
+        lines.extend(["", f"Stack: {tech_stack}"])
+    return "\n".join(lines) + "\n"
+
+
+def _project_intake_data(name: str) -> dict[str, Any]:
+    runtime = get_runtime()
+    source = runtime.store.get_project_source(name)
+    repo_binding = runtime.store.get_project_repo_binding(name)
+    return {
+        "source": (
+            {
+                "type": source.source_type,
+                "label": source.label,
+                "location": source.location,
+                "content_text": source.content_text,
+                "metadata": source.metadata,
+                "updated_at": source.updated_at,
+            }
+            if source
+            else None
+        ),
+        "repo_binding": (
+            {
+                "provider": repo_binding.provider,
+                "mode": repo_binding.mode,
+                "repo_name": repo_binding.repo_name,
+                "repo_url": repo_binding.repo_url,
+                "local_path": repo_binding.local_path,
+                "is_new": repo_binding.is_new,
+                "metadata": repo_binding.metadata,
+                "updated_at": repo_binding.updated_at,
+            }
+            if repo_binding
+            else None
+        ),
+    }
+
+
+def _source_content_from_body(body: dict[str, Any]) -> str:
+    content = str(body.get("source_text") or body.get("idea") or "").strip()
+    source_path = str(body.get("source_path") or "").strip()
+    if content or not source_path:
+        return content
+    try:
+        path = Path(source_path).expanduser().resolve()
+    except Exception:
+        return ""
+    if not path.exists() or not path.is_file():
+        return ""
+    try:
+        return path.read_text()[:200000]
+    except Exception:
+        return ""
+
+
+def _repo_binding_from_body(body: dict[str, Any], repo_root: Path) -> dict[str, Any]:
+    repo_mode = str(body.get("repo_mode") or "").strip() or ("existing" if body.get("repo") else "detected")
+    provider = str(body.get("repo_provider") or ("github" if repo_mode in {"existing", "new"} else "local")).strip()
+    repo_value = str(body.get("repo") or "").strip()
+    repo_url = str(body.get("repo_url") or "").strip()
+
+    if repo_mode == "new":
+        repo_name = str(body.get("repo_name") or "").strip()
+        if not repo_name:
+            raise HTTPException(400, "repo_name is required when repo_mode is 'new'")
+        created = github.create_repository(
+            repo_name,
+            description=str(body.get("description") or "").strip(),
+            private=bool(body.get("repo_private", True)),
+        )
+        if not created:
+            raise HTTPException(400, f"Failed to create repository '{repo_name}'")
+        repo_value = created["full_name"]
+        repo_url = created["url"]
+    elif repo_mode == "existing":
+        if not repo_value:
+            raise HTTPException(400, "repo is required when repo_mode is 'existing'")
+        if not repo_url and repo_value:
+            repo_url = f"https://github.com/{_repo_slug(repo_value)}"
+    elif repo_mode == "detected" and not repo_value:
+        repo_value = detect_remote_repo(repo_root)
+        if repo_value and not repo_url:
+            repo_url = f"https://github.com/{_repo_slug(repo_value)}"
+
+    return {
+        "provider": provider,
+        "mode": repo_mode,
+        "repo_name": _repo_slug(repo_value) or repo_value,
+        "repo_url": repo_url,
+        "is_new": repo_mode == "new",
+        "metadata": {
+            "repo_private": bool(body.get("repo_private", True)),
+            "requested_repo": str(body.get("repo") or "").strip(),
+        },
+    }
+
+
+def _run_git(repo_root: Path, args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    if check and result.returncode != 0:
+        raise HTTPException(400, (result.stderr or result.stdout or "git command failed").strip())
+    return result
+
+
+def _ensure_worktree(repo_root: Path, slug: str) -> tuple[Path, str]:
+    _run_git(repo_root, ["rev-parse", "--show-toplevel"])
+    branch = f"worktree/{slug}"
+    worktree_path = repo_root / "worktree" / slug
+
+    base_ref = "main"
+    if _run_git(repo_root, ["rev-parse", "--verify", "main"], check=False).returncode != 0:
+        base_ref = "HEAD"
+
+    if _run_git(repo_root, ["rev-parse", "--verify", branch], check=False).returncode != 0:
+        _run_git(repo_root, ["branch", branch, base_ref])
+
+    worktree_path.parent.mkdir(parents=True, exist_ok=True)
+    if not worktree_path.exists():
+        _run_git(repo_root, ["worktree", "add", str(worktree_path), branch])
+    return worktree_path, branch
+
+
+def _agent_registry_data(project_dir: Path) -> dict[str, Any]:
+    registry = AgentRegistry(project_dir)
+    agents = []
+    for agent in registry.list_agents():
+        agents.append(
+            {
+                "name": agent.name,
+                "provider": agent.provider,
+                "status": agent.status.value,
+                "priority": agent.priority,
+                "supports_headless": agent.supports_headless,
+                "last_used": agent.last_used,
+                "last_error": agent.last_error,
+                "last_credit_error": agent.last_credit_error,
+                "health_reason": agent.health_reason,
+                "cooldown_until": agent.cooldown_until,
+                "reset_at": agent.reset_at,
+                "success_count": agent.success_count,
+                "failure_count": agent.failure_count,
+                # Usage tracking fields
+                "total_api_calls": agent.total_api_calls,
+                "total_tokens_used": agent.total_tokens_used,
+                "total_input_tokens": agent.total_input_tokens,
+                "total_output_tokens": agent.total_output_tokens,
+                "estimated_cost_usd": agent.estimated_cost_usd,
+                "credits_remaining": agent.credits_remaining,
+                "credits_limit": agent.credits_limit,
+                "daily_usage": agent.daily_usage,
+            }
+        )
+
+    return {
+        "active_agent": registry.active_agent,
+        "agents": agents,
+        "history": registry.get_history(limit=8),
+        "counts": {
+            "total": len(agents),
+            "available": sum(1 for item in agents if item["status"] == "available"),
+            "blocked": sum(1 for item in agents if item["status"] in {"no_credits", "cooldown", "error"}),
+        },
+    }
+
+
+def _chat_options_for(cwd: Path) -> list[dict[str, Any]]:
+    options: list[str] = []
+    resolved = cwd.resolve()
+
+    if _has_project_state(resolved):
+        spec = MemoryManager(resolved).spec()
+        if spec.get("executor"):
+            options.append(spec["executor"])
+        registry = AgentRegistry(resolved)
+        if registry.active_agent:
+            options.append(registry.active_agent)
+        options.extend(agent.name for agent in registry.list_agents())
+    else:
+        found = find_project_dir(resolved)
+        if found and _has_project_state(found):
+            spec = MemoryManager(found).spec()
+            if spec.get("executor"):
+                options.append(spec["executor"])
+            registry = AgentRegistry(found)
+            if registry.active_agent:
+                options.append(registry.active_agent)
+            options.extend(agent.name for agent in registry.list_agents())
+
+    options.extend(["claude-code", "codex", "kiro"])
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for name in options:
+        if name in seen or name not in CHAT_EXECUTOR_CONFIG:
+            continue
+        seen.add(name)
+        cfg = CHAT_EXECUTOR_CONFIG[name]
+        binary = cfg["cmd"][0]
+        deduped.append(
+            {
+                "name": name,
+                "label": cfg["label"],
+                "available": bool(shutil.which(binary)),
+                "resume": bool(cfg["resume"]),
+            }
+        )
+    return deduped
+
+
+def _resolve_chat_executor(cwd: Path, requested: str | None = None) -> dict[str, Any]:
+    options = _chat_options_for(cwd)
+    option_map = {opt["name"]: opt for opt in options}
+    requested_name = (requested or "auto").strip()
+
+    if requested_name and requested_name != "auto" and requested_name in option_map:
+        selected = option_map[requested_name]
+    else:
+        selected = next((opt for opt in options if opt["available"]), None)
+        if not selected and options:
+            selected = options[0]
+
+    if not selected:
+        return {
+            "requested_executor": requested_name or "auto",
+            "resolved_executor": None,
+            "executor": None,
+            "label": "Agent",
+            "available": False,
+            "resume": False,
+            "options": options,
+            "placeholder": "No chat-capable agent configured",
+            "greeting": "No chat-capable headless agent is configured for this project.",
+        }
+
+    label = selected["label"]
+    return {
+        "requested_executor": requested_name or "auto",
+        "resolved_executor": selected["name"],
+        "executor": selected["name"],
+        "label": label,
+        "available": bool(selected["available"]),
+        "resume": bool(selected["resume"]),
+        "options": options,
+        "placeholder": f"Message {label}…",
+        "greeting": f"Hey! I'm {label}. Ask me anything about your projects.",
+    }
+
+
+def _latest_runtime_records(project_dir: Path):
+    runtime = get_runtime()
+    slug = project_slug(project_dir)
+    jobs = runtime.store.recent_jobs(slug, limit=1)
+    runs = runtime.store.recent_agent_runs(slug, limit=1)
+    return (jobs[0] if jobs else None), (runs[0] if runs else None)
+
+
+def _runtime_pipeline_status(project_dir: Path, wf: WorkflowState) -> dict[str, Any]:
+    job, run = _latest_runtime_records(project_dir)
+    held = wf._process.get("held", False)
+    is_running = bool(job and job.status in {"queued", "running"})
+
+    if held:
+        status = "held"
+    elif wf.is_done():
+        status = "done"
+    elif wf.is_approval_gate():
+        status = "waiting"
+    elif is_running:
+        status = "running"
+    elif job and job.status == "failed":
+        status = "stale"
+    else:
+        status = "stopped"
+
+    return {
+        "status": status,
+        "pid": run.pid if is_running and run else None,
+        "last_tick": None,
+        "is_running": is_running,
+        "at_gate": wf.is_approval_gate(),
+        "held": held,
+        "job_id": job.id if job else None,
+        "job_status": job.status if job else None,
+        "job_type": job.job_type if job else None,
+        "run_id": run.id if run else None,
+        "agent_name": run.agent_name if run else None,
+        "skill": run.skill if run else None,
+        "error": job.error if job else None,
+    }
+
+
+def _dispatch_current_phase(project_dir: Path, *, trigger: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    wf = WorkflowState(project_dir)
+    status_payload = _runtime_pipeline_status(project_dir, wf)
+    if status_payload["is_running"]:
+        return {"ok": True, "already_running": True, **status_payload}
+    if wf._process.get("held", False):
+        return {
+            "ok": False,
+            "warning": "Project is held",
+            "phase": wf.phase.value,
+            "status": wf.status.value,
+            **status_payload,
+        }
+    if wf.is_done():
+        return {"ok": False, "warning": "Workflow is complete", "phase": wf.phase.value, "status": wf.status.value}
+    if wf.is_approval_gate():
+        return {
+            "ok": False,
+            "warning": "Workflow is awaiting approval",
+            "phase": wf.phase.value,
+            "status": wf.status.value,
+            **status_payload,
+        }
+
+    sync_project_from_disk(project_dir, workflow_data=wf._data)
+    spec = MemoryManager(project_dir).spec()
+    run = get_runtime().spawn_for_project(
+        project_dir,
+        job_type=wf.phase.value,
+        preferred_agent=spec.get("executor") or DEFAULT_EXECUTOR,
+        trigger=trigger,
+        allow_fallback=bool(spec.get("agent_fallback", True)),
+        payload={"phase": wf.phase.value, "status": wf.status.value},
+        metadata=metadata,
+    )
+    if run is None:
+        return {
+            "ok": False,
+            "warning": "No runnable headless agent found",
+            "phase": wf.phase.value,
+            "status": wf.status.value,
+        }
+
+    job = get_runtime().store.get_job(run.job_id) if run.job_id else None
+    return {
+        "ok": True,
+        "phase": wf.phase.value,
+        "status": wf.status.value,
+        "job_id": run.job_id,
+        "run_id": run.id,
+        "agent_name": run.agent_name,
+        "skill": run.skill,
+        "job_status": job.status if job else None,
+    }
+
+
+def _start_pipeline(project_dir: Path) -> dict[str, Any]:
+    return _dispatch_current_phase(project_dir, trigger="api_start_pipeline")
+
+
+def _bootstrap_project(body: dict[str, Any]) -> tuple[Path, str]:
+    project_name = (body.get("project_name") or "").strip()
+    if not project_name:
+        raise HTTPException(400, "project_name is required")
+
+    slug = _slugify(body.get("slug") or project_name)
+    if not slug:
+        raise HTTPException(400, "project_name must contain at least one letter or number")
+
+    repo_root = _ui_repo_root()
+    worktree_path, branch = _ensure_worktree(repo_root, slug)
+    if (worktree_path / ".sdlc" / "spec.yaml").exists():
+        raise HTTPException(409, f"Project '{slug}' already exists")
+
+    init_sdlc_dirs(worktree_path)
+    set_initial_state(worktree_path, "requirement")
+
+    approvals_enabled = bool(body.get("require_approvals", True))
+    executor = body.get("executor") or DEFAULT_EXECUTOR
+    tech_stack = (body.get("tech_stack") or "").strip()
+    description = (body.get("description") or "").strip()
+    source_type = str(body.get("source_type") or ("manual" if body.get("source_text") or body.get("idea") else "unknown")).strip()
+    source_label = str(body.get("source_label") or project_name).strip()
+    source_location = str(body.get("source_path") or "").strip()
+    source_content = _source_content_from_body(body)
+    repo_binding = _repo_binding_from_body(body, repo_root)
+    repo_value = repo_binding["repo_name"] or detect_remote_repo(repo_root)
+
+    spec = {
+        "project_name": project_name,
+        "description": description,
+        "tech_stack": tech_stack,
+        "repo": repo_value,
+        "slack_webhook": "",
+        "executor": executor,
+        "agent_fallback": bool(body.get("agent_fallback", True)),
+        "phase_approvals": _approval_map(approvals_enabled),
+    }
+
+    mem = MemoryManager(worktree_path)
+    mem.write_spec(spec)
+    if not mem.project_path.exists():
+        mem.write_project_memory(_project_template(project_name, description, tech_stack))
+    else:
+        mem.regenerate_claude_md()
+
+    WorkflowState(worktree_path).set_branches(base_branch=branch, current_branch=branch)
+
+    update_gitignore(worktree_path)
+
+    registry = AgentRegistry(worktree_path)
+    fallback_order = _known_agent_order(
+        executor,
+        [name.strip() for name in str(body.get("agent_order", "")).split(",") if name.strip()],
+    )
+    for idx, name in enumerate(fallback_order, start=1):
+        if registry.get_agent(name):
+            continue
+        registry.add_agent(name, priority=idx, supports_headless=bool(EXECUTOR_CLI.get(name)))
+    registry.reprioritize(fallback_order)
+    registry.record_event(
+        "project_initialized",
+        f"Project {slug} initialized from dashboard",
+        metadata={"executor": executor, "branch": branch},
+    )
+    runtime = get_runtime()
+    runtime.store.upsert_project_source(
+        project_slug=slug,
+        source_type=source_type,
+        label=source_label,
+        location=source_location,
+        content_text=source_content,
+        metadata={
+            "project_name": project_name,
+            "description": description,
+            "tech_stack": tech_stack,
+        },
+    )
+    runtime.store.upsert_project_repo_binding(
+        project_slug=slug,
+        provider=repo_binding["provider"],
+        mode=repo_binding["mode"],
+        repo_name=repo_binding["repo_name"],
+        repo_url=repo_binding["repo_url"],
+        local_path=str(repo_root),
+        is_new=bool(repo_binding["is_new"]),
+        metadata=repo_binding["metadata"],
+    )
+    return worktree_path, slug
+
+
 _ansi = re.compile(r'\x1b\[[0-9;]*[mGKHFJABCDsu]|\x1b\][^\x07]*\x07|\x1b\[?\?[0-9;]*[hl]|\r')
 _SKIP = ('▸ Credits', 'Credits:', 'All tools are now trusted', 'Learn more at', 'Agents can sometimes',
          '✓ Successfully', '⋮', 'Summary:', 'Completed in', '- Completed')
@@ -279,31 +947,46 @@ def chat_jobs():
 
 
 @app.get("/api/chat")
-async def chat(message: str):
+async def chat(message: str, executor: str | None = None):
     """Start chat in background, return job_id immediately, client polls /api/chat/{job_id}."""
     import uuid
     job_id = str(uuid.uuid4())
     _jobs[job_id] = {"status": "running", "lines": [], "done": False}
 
     def _run():
-        cli = shutil.which("kiro-cli") or "kiro-cli"
         cwd = _chat_dir
-        cwd_key = str(cwd)
         ctx = _build_sdlc_context()
         full_message = f"{ctx}\n\n{message}" if ctx else message
-        with _chat_lock:
-            has_session = _chat_started.get(cwd_key, False)
-            _chat_started[cwd_key] = True
-        cmd = [cli, "chat", "--no-interactive", "--trust-all-tools"]
-        if has_session:
-            cmd.append("--resume")
-        cmd.append(full_message)
+        meta = _resolve_chat_executor(cwd, executor)
+        chosen = meta.get("executor")
+        if not chosen:
+            _jobs[job_id]["lines"].append(meta["greeting"])
+            _append_job(job_id, meta["greeting"])
+            _jobs[job_id]["done"] = True
+            _append_job(job_id, done=True)
+            return
+
+        cfg = CHAT_EXECUTOR_CONFIG[chosen]
+        binary = shutil.which(cfg["cmd"][0]) or cfg["cmd"][0]
+        cwd_key = f"{cwd.resolve()}::{chosen}"
+        has_session = False
+        if cfg["resume"]:
+            with _chat_lock:
+                has_session = _chat_started.get(cwd_key, False)
+                _chat_started[cwd_key] = True
+        cmd = [binary, *cfg["cmd"][1:]]
+        if chosen == "kiro":
+            if has_session:
+                cmd.append("--resume")
+            cmd.append(full_message)
+        else:
+            cmd.append(full_message)
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=cwd)
-            response_started = False
+            response_started = chosen != "kiro"
             for line in proc.stdout:
                 line = _ansi.sub('', line).replace('\r', '')
-                if not response_started:
+                if chosen == "kiro" and not response_started:
                     if re.match(r'^>\s*\S', line):
                         response_started = True
                         line = re.sub(r'^>\s*', '', line)
@@ -316,6 +999,8 @@ async def chat(message: str):
                 line = line.rstrip()
                 if any(s in line for s in _SKIP):
                     continue
+                if not line.strip():
+                    continue
                 _jobs[job_id]["lines"].append(line)
                 _append_job(job_id, line)
             proc.wait()
@@ -326,7 +1011,14 @@ async def chat(message: str):
         _append_job(job_id, done=True)
 
     threading.Thread(target=_run, daemon=True).start()
-    return {"job_id": job_id}
+    meta = _resolve_chat_executor(_chat_dir, executor)
+    return {
+        "job_id": job_id,
+        "executor": meta.get("executor"),
+        "resolved_executor": meta.get("resolved_executor"),
+        "requested_executor": meta.get("requested_executor"),
+        "label": meta.get("label"),
+    }
 
 
 @app.get("/api/chat/{job_id}")
@@ -635,32 +1327,9 @@ def _project_data(project_dir: Path, name: str) -> dict[str, Any]:
         }
         phases_out.append(entry)
 
-    proc = wf._process
-    held = proc.get("held", False)
-    pid = proc.get("pid")
-    last_tick = proc.get("last_tick")
-    is_running = False
-    if pid:
-        try:
-            os.kill(pid, 0)
-            is_running = True
-        except (OSError, ProcessLookupError):
-            pass
-    if held:
-        proc_status = "held"
-    elif wf.is_done():
-        proc_status = "done"
-    elif is_running:
-        if last_tick and (time.time() - last_tick) > 900:
-            proc_status = "stale"
-        elif at_gate:
-            proc_status = "waiting"
-        else:
-            proc_status = "running"
-    else:
-        proc_status = "stopped"
-
     impl_phase = next((ph for ph in phases_out if ph["name"] == Phase.IMPLEMENTATION.value), {})
+    registry_data = _agent_registry_data(project_dir)
+    intake = _project_intake_data(name)
     return {
         "name": name,
         "display_name": spec.get("project_name", name),
@@ -685,22 +1354,21 @@ def _project_data(project_dir: Path, name: str) -> dict[str, Any]:
         "commit_links": commit_links,
         "artifact_links": artifact_links,
         "artifact_items": artifact_items,
-        "held": held,
-        "process_status": {"status": proc_status, "pid": pid, "last_tick": last_tick, "is_running": is_running},
+        "held": wf._process.get("held", False),
+        "pipeline_status": _runtime_pipeline_status(project_dir, wf),
+        "agent_registry": registry_data,
+        "source": intake["source"],
+        "repo_binding": intake["repo_binding"],
     }
 
 
 @app.get("/api/projects")
 def get_projects():
-    # Collect active project entries from all known repo roots (global)
-    entries = list(_known_project_entries())
-    seen_dirs = {pd.resolve() for pd, _ in entries}
-
     active = []
     closed = []
     seen_keys: set[Path] = set()
 
-    for project_dir, name in entries:
+    for project_dir, name, archived in _db_project_entries():
         key = project_dir.resolve()
         if key in seen_keys:
             continue
@@ -710,24 +1378,57 @@ def get_projects():
         data = _project_data(project_dir, name)
         if data.get("error"):
             continue
-        if data.get("phase") == Phase.DONE.value or data.get("closed"):
+        if archived:
+            data["archived"] = True
+            closed.append(data)
+        elif data.get("phase") == Phase.DONE.value or data.get("closed"):
             closed.append(data)
         else:
             active.append(data)
 
-    # Add archived projects from .projects/ (always closed/done)
-    for project_dir, name in _known_archive_entries():
-        key = project_dir.resolve()
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        data = _project_data(project_dir, name)
-        if data.get("error"):
-            continue
-        data["archived"] = True
-        closed.append(data)
-
     return {"active": active, "closed": closed}
+
+
+@app.get("/api/intake/github/repos")
+def github_repos(limit: int = 100):
+    if not github.is_available():
+        return {"available": False, "repos": []}
+    return {"available": True, "repos": github.list_repositories(limit=limit)}
+
+
+@app.post("/api/intake/github/repos")
+def create_github_repo(body: dict[str, Any]):
+    if not github.is_available():
+        raise HTTPException(400, "GitHub CLI is not available")
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+    created = github.create_repository(
+        name,
+        description=str(body.get("description") or "").strip(),
+        private=bool(body.get("private", True)),
+    )
+    if not created:
+        raise HTTPException(400, f"Failed to create repository '{name}'")
+    return {"ok": True, "repo": created}
+
+
+@app.post("/api/projects/start")
+def create_project(body: dict[str, Any]):
+    project_dir, slug = _bootstrap_project(body)
+    start_pipeline = bool(body.get("start_pipeline", body.get("start_loop", False)))
+    pipeline_result = _dispatch_current_phase(project_dir, trigger="project_start") if start_pipeline else None
+    return {
+        "ok": True,
+        "project": _project_data(project_dir, slug),
+        "pipeline": pipeline_result,
+    }
+
+
+@app.get("/api/projects/{name}/intake")
+def get_project_intake(name: str):
+    _resolve_project_dir(name)
+    return _project_intake_data(name)
 
 
 @app.get("/api/projects/{name}/state", response_class=PlainTextResponse)
@@ -735,6 +1436,30 @@ def get_state_json(name: str):
     wf_dir = _resolve_project_dir(name)
     wf = WorkflowState(wf_dir)
     return PlainTextResponse(wf.path.read_text(), media_type="application/json")
+
+
+@app.get("/api/projects/{name}/agents")
+def get_agents(name: str):
+    project_dir = _resolve_project_dir(name)
+    return _agent_registry_data(project_dir)
+
+
+@app.post("/api/projects/{name}/agents/reset")
+def reset_all_agents(name: str):
+    project_dir = _resolve_project_dir(name)
+    registry = AgentRegistry(project_dir)
+    registry.reset_all()
+    return {"ok": True, "registry": _agent_registry_data(project_dir)}
+
+
+@app.post("/api/projects/{name}/agents/{agent_name}/reset")
+def reset_agent(name: str, agent_name: str):
+    project_dir = _resolve_project_dir(name)
+    registry = AgentRegistry(project_dir)
+    if not registry.get_agent(agent_name):
+        raise HTTPException(404, f"Agent not found: {agent_name}")
+    registry.reset_agent(agent_name)
+    return {"ok": True, "registry": _agent_registry_data(project_dir)}
 
 
 @app.get("/api/projects/{name}/artifact/{key}")
@@ -802,10 +1527,32 @@ The file may not have been created yet, or the path may be incorrect in the work
 @app.post("/api/projects/{name}/approve")
 def approve(name: str):
     wf_dir = _resolve_project_dir(name)
-    result = subprocess.run(["sdlc", "state", "approve"], cwd=wf_dir, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise HTTPException(400, result.stderr or result.stdout)
-    return {"ok": True, "output": result.stdout.strip()}
+    service = get_workflow_service()
+    wf = service.load(wf_dir)
+    if not wf.is_approval_gate():
+        raise HTTPException(400, f"Not an approval gate: {wf.phase.value}:{wf.status.value}")
+
+    approved_phase = wf.phase.value
+    approved_status = wf.status.value
+    wf = service.approve(wf_dir)
+    sync_project_from_disk(wf_dir, workflow_data=wf._data)
+    approval = record_approval_event(
+        wf_dir,
+        phase=approved_phase,
+        source="ui_api",
+        state="approved",
+        payload={
+            "from_phase": approved_phase,
+            "from_status": approved_status,
+            "to_phase": wf.phase.value,
+            "to_status": wf.status.value,
+        },
+    )
+    return {
+        "ok": True,
+        "workflow": {"phase": wf.phase.value, "status": wf.status.value, "label": wf.label()},
+        "approval": {"id": approval.id, "phase": approval.phase, "state": approval.state},
+    }
 
 
 @app.post("/api/projects/{name}/no-approvals")
@@ -828,7 +1575,8 @@ def hold_project(name: str):
 def resume_project(name: str):
     wf_dir = _resolve_project_dir(name)
     WorkflowState(wf_dir).set_process(held=False)
-    return {"ok": True}
+    dispatch = _dispatch_current_phase(wf_dir, trigger="ui_resume")
+    return {"ok": True, "dispatch": dispatch}
 
 
 @app.post("/api/projects/{name}/approvals")
@@ -1001,89 +1749,42 @@ def get_evidence_file(name: str, filename: str):
 
 
 @app.get("/api/projects/{name}/status")
-def get_process_status(name: str):
-    """Detect if loop process is running, stopped, or waiting for approval."""
-    import os
-    import time
+def get_pipeline_status(name: str):
+    """Return runtime-backed orchestrator status for the project."""
     wf_dir = _resolve_project_dir(name)
     try:
         wf = WorkflowState(wf_dir)
-        proc = wf._process
-        pid = proc.get("pid")
-        last_tick = proc.get("last_tick")
-        held = proc.get("held", False)
-        at_gate = wf.is_approval_gate()
-
-        is_running = False
-        if pid:
-            try:
-                os.kill(pid, 0)
-                is_running = True
-            except (OSError, ProcessLookupError):
-                pass
-
-        if held:
-            status = "held"
-        elif wf.is_done():
-            status = "done"
-        elif is_running:
-            if last_tick and (time.time() - last_tick) > 600:
-                status = "stale"
-            elif at_gate:
-                status = "waiting"
-            else:
-                status = "running"
-        else:
-            status = "stopped"
-
-        return {
-            "status": status,
-            "pid": pid,
-            "last_tick": last_tick,
-            "is_running": is_running,
-            "at_gate": at_gate,
-            "held": held,
-        }
+        return _runtime_pipeline_status(wf_dir, wf)
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
 
-@app.post("/api/projects/{name}/start-loop")
-def start_loop(name: str):
-    """Start the orchestration loop in background."""
-    import subprocess
-    from sdlc_orchestrator.memory import MemoryManager, EXECUTOR_CLI
-
+@app.post("/api/projects/{name}/start-pipeline")
+def start_pipeline(name: str):
+    """Kick off the current phase through the Python orchestrator runtime."""
     wf_dir = _resolve_project_dir(name)
-
-    spec = MemoryManager(wf_dir).spec()
-    executor = spec.get("executor", "kiro")
-    cmd_template = EXECUTOR_CLI.get(executor, EXECUTOR_CLI["kiro"])
-    if not cmd_template:
-        raise HTTPException(400, f"Executor '{executor}' has no headless CLI")
-
-    skill = "sdlc-orchestrate"
-    loop_cmd = " ".join(
-        part.replace("{skill}", skill) for part in cmd_template
-    )
-    bash_cmd = f"while true; do {loop_cmd}; sleep 600; done"
-
-    try:
-        import time as _time
-        proc = subprocess.Popen(
-            ["bash", "-c", bash_cmd],
-            cwd=str(wf_dir),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        WorkflowState(wf_dir).set_process(pid=proc.pid, last_tick=_time.time())
-        return {"ok": True, "pid": proc.pid, "cwd": str(wf_dir), "executor": executor}
-    except Exception as e:
-        raise HTTPException(500, f"Failed to start loop: {e}")
+    return _start_pipeline(wf_dir)
 
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    html_path = Path(__file__).parent / "dashboard.html"
-    return html_path.read_text()
+    """Serve the React dashboard."""
+    return react_dashboard()
+
+
+@app.get("/react", response_class=HTMLResponse)
+def react_dashboard():
+    """Serve the React dashboard."""
+    react_build = Path(__file__).parent / "react-app" / "dist" / "index.html"
+    if react_build.exists():
+        return react_build.read_text()
+    return HTMLResponse("""
+        <!DOCTYPE html>
+        <html>
+        <head><title>SDLC Dashboard</title></head>
+        <body style="font-family: sans-serif; padding: 40px; text-align: center;">
+            <h1>Dashboard Not Built</h1>
+            <p>Run <code>npm run build</code> in <code>sdlc_orchestrator/ui/react-app</code> to build the UI.</p>
+        </body>
+        </html>
+    """, status_code=503)

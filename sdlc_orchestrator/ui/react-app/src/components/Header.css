@@ -1,0 +1,100 @@
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  max-width: 1400px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.header-main {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.header h1 {
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.header-timer {
+  font-size: 0.72rem;
+  color: #475569;
+}
+
+.runtime-banner {
+  max-width: 1400px;
+  margin: -10px auto 18px;
+  padding: 8px 12px;
+  border: 1px solid #2d3748;
+  border-radius: 10px;
+  background: #161b27;
+  color: #94a3b8;
+  font-size: 0.68rem;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.runtime-banner strong {
+  color: #e2e8f0;
+}
+
+.runtime-mode {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.runtime-mode.repo {
+  background: #14291f;
+  color: #4ade80;
+}
+
+.runtime-mode.installed {
+  background: #3b2a1a;
+  color: #fbbf24;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.header-btn {
+  border: 1px solid #2c5b34;
+  background: linear-gradient(135deg, #17422a, #1f6b3a);
+  color: #d1fae5;
+  border-radius: 10px;
+  padding: 9px 14px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.header-btn:hover {
+  filter: brightness(1.08);
+}
+
+@media (max-width: 768px) {
+  .header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .header-main {
+    justify-content: space-between;
+  }
+
+  .runtime-banner {
+    font-size: 0.64rem;
+  }
+}

@@ -11,7 +11,7 @@ from sdlc_orchestrator.commands import require_project
 
 @click.group()
 def artifact():
-    """Read and list phase artifacts (used by Claude during /sdlc-orchestrate)."""
+    """Read and list phase artifacts for the active project."""
     pass
 
 
@@ -30,7 +30,7 @@ def artifact_set(key, path):
 @artifact.command("read")
 @click.argument("name")
 def artifact_read(name):
-    """Print an artifact to stdout. Claude uses this to read phase outputs."""
+    """Print an artifact to stdout for the active phase agent."""
     project_dir = require_project()
     content = MemoryManager(project_dir).artifact(name)
     if not content:

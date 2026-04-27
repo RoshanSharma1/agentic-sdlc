@@ -62,7 +62,7 @@ def status():
         for h in history[-6:]:
             console.print(f"  {h['timestamp'][:19].replace('T',' ')}  {h['state']}")
 
-    console.print("\n[dim]To continue: open Claude Code and invoke[/dim] [bold]/sdlc-orchestrate[/bold]")
+    console.print("\n[dim]To continue: let the Python orchestrator dispatch the next phase agent.[/dim]")
 
 
 @click.command()
@@ -217,7 +217,8 @@ def watch(interval, stale_timeout, all_projects, projects_dir, fix_skills):
     import time
     from sdlc_orchestrator.integrations.github import get_pr_status, is_available
     from sdlc_orchestrator.integrations.slack import notify_from_spec
-    from sdlc_orchestrator.commands.init import trigger_agent, install_global_skills
+    from sdlc_orchestrator.commands.init import install_global_skills
+    from sdlc_orchestrator.backend import get_runtime
 
     # Collect projects to watch
     scan = Path(projects_dir) if projects_dir else Path.cwd().parent
@@ -309,7 +310,11 @@ def watch(interval, stale_timeout, all_projects, projects_dir, fix_skills):
                 stale_secs = now - track["state_since"]
                 if stale_secs >= stale_timeout:
                     console.print(f"[yellow]STUCK[/yellow]    {label}: '{current_state}' for {int(stale_secs)}s — triggering agent")
-                    result = trigger_agent(project_dir)
+                    result = get_runtime().spawn_for_project(
+                        project_dir,
+                        trigger="stale_timeout",
+                        allow_fallback=bool(spec.get("agent_fallback", True)),
+                    )
                     if result is None:
                         console.print(f"  [yellow]{label}: executor has no headless CLI[/yellow]")
                     track["state_since"] = now  # reset to avoid re-triggering immediately
@@ -340,10 +345,18 @@ def watch(interval, stale_timeout, all_projects, projects_dir, fix_skills):
                     track["last_pr_status"] = pr_status
 
                 if pr_status in ("approved", "merged"):
-                    console.print(f"[green]✓ PR approved[/green]  {label} — triggering agent")
-                    result = trigger_agent(project_dir)
-                    if result is None:
-                        console.print(f"  [yellow]{label}: executor has no headless CLI[/yellow]")
+                    console.print(f"[green]✓ PR approved[/green]  {label} — recording approval event")
+                    try:
+                        from sdlc_orchestrator.backend import record_approval_event
+                        record_approval_event(
+                            project_dir,
+                            phase=wf.phase.value,
+                            source="github_pr_poll",
+                            state=pr_status,
+                            payload={"branch": branch, "repo": repo},
+                        )
+                    except Exception:
+                        pass
                     track["last_pr_status"] = ""
 
             time.sleep(interval)
@@ -363,8 +376,6 @@ def webhook(port, secret):
     import hmac
     import json as _json
     from http.server import BaseHTTPRequestHandler, HTTPServer
-    from sdlc_orchestrator.commands.init import trigger_agent
-
     project_dir = require_project()
 
     class WebhookHandler(BaseHTTPRequestHandler):
@@ -390,29 +401,44 @@ def webhook(port, secret):
                 self.send_response(400); self.end_headers(); return
 
             event = self.headers.get("X-GitHub-Event", "")
-            triggered = False
-
             if event == "pull_request":
                 action = payload.get("action")
                 merged = payload.get("pull_request", {}).get("merged", False)
                 branch = payload.get("pull_request", {}).get("head", {}).get("ref", "")
                 if action == "closed" and merged and branch.startswith("sdlc/"):
-                    console.print(f"[green]✓ PR merged:[/green] {branch} — triggering Claude")
-                    triggered = True
+                    console.print(f"[green]✓ PR merged:[/green] {branch} — recording approval event")
+                    try:
+                        from sdlc_orchestrator.backend import record_approval_event
+                        wf = WorkflowState(project_dir)
+                        record_approval_event(
+                            project_dir,
+                            phase=wf.phase.value,
+                            source="github_webhook",
+                            state="merged",
+                            payload={"branch": branch, "event": event},
+                        )
+                    except Exception:
+                        pass
 
             elif event == "pull_request_review":
                 state = payload.get("review", {}).get("state", "").upper()
                 branch = payload.get("pull_request", {}).get("head", {}).get("ref", "")
                 if state == "APPROVED" and branch.startswith("sdlc/"):
-                    console.print(f"[green]✓ PR approved:[/green] {branch} — triggering Claude")
-                    triggered = True
+                    console.print(f"[green]✓ PR approved:[/green] {branch} — recording approval event")
+                    try:
+                        from sdlc_orchestrator.backend import record_approval_event
+                        wf = WorkflowState(project_dir)
+                        record_approval_event(
+                            project_dir,
+                            phase=wf.phase.value,
+                            source="github_webhook",
+                            state="approved",
+                            payload={"branch": branch, "event": event},
+                        )
+                    except Exception:
+                        pass
 
             self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
-
-            if triggered:
-                result = trigger_agent(project_dir)
-                if result is None:
-                    console.print("[yellow]Executor has no headless CLI — run /sdlc-orchestrate manually.[/yellow]")
 
         def do_GET(self):
             if self.path == "/health":
@@ -436,7 +462,7 @@ def webhook(port, secret):
 
 @click.group()
 def tick():
-    """Tick-lock helpers — prevent concurrent /sdlc-orchestrate runs."""
+    """Tick-lock helpers — prevent concurrent phase-agent runs."""
     pass
 
 

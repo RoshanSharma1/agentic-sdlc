@@ -30,8 +30,8 @@ EXECUTOR_CONFIG: dict[str, tuple[str, Path, Path]] = {
 }
 DEFAULT_EXECUTOR = "claude-code"
 
-# CLI command to trigger a headless orchestration tick per executor.
-# {skill} is replaced with the skill name (e.g. "sdlc-orchestrate").
+# CLI command to trigger a headless phase skill per executor.
+# {skill} is replaced with the resolved skill name (e.g. "sdlc-requirement").
 EXECUTOR_CLI: dict[str, list[str]] = {
     "claude-code": ["claude", "-p", "--dangerously-skip-permissions", "/{skill}"],
     "codex":       ["codex", "exec", "--full-auto", "{skill}"],
@@ -89,6 +89,14 @@ class MemoryManager:
     def spec(self) -> dict:
         if self.spec_path.exists():
             return yaml.safe_load(self.spec_path.read_text()) or {}
+        try:
+            from sdlc_orchestrator.backend import get_runtime
+            from sdlc_orchestrator.utils import project_slug
+            record = get_runtime().store.get_project(project_slug(self.project_dir))
+            if record and record.spec:
+                return record.spec
+        except Exception:
+            pass
         return {}
 
     def feedback(self, phase: str) -> str:
@@ -117,7 +125,14 @@ class MemoryManager:
         self._sdlc.mkdir(parents=True, exist_ok=True)
         if "phase_approvals" not in spec:
             spec["phase_approvals"] = {p: True for p in self.ALL_PHASES}
+        if "agent_fallback" not in spec:
+            spec["agent_fallback"] = True  # Enable by default
         self.spec_path.write_text(yaml.dump(spec, default_flow_style=False))
+        try:
+            from sdlc_orchestrator.backend import sync_project_from_disk
+            sync_project_from_disk(self.project_dir)
+        except Exception:
+            pass
 
     def set_phase_approvals(self, value: bool) -> None:
         spec = self.spec()

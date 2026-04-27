@@ -1,0 +1,36 @@
+.app {
+  min-height: 100vh;
+  padding: 24px;
+  animation: fadeIn 0.4s ease;
+}
+
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.view-content {
+  margin-top: 24px;
+  animation: fadeIn 0.3s ease 0.1s both;
+}
+
+/* Smooth page transitions */
+.view-content > * {
+  animation: slideIn 0.3s ease;
+}
+
+@media (max-width: 768px) {
+  .app {
+    padding: 12px;
+  }
+
+  .view-content {
+    margin-top: 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  .app {
+    padding: 8px;
+  }
+}

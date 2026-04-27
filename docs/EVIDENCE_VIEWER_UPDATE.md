@@ -87,7 +87,7 @@ wf.mark_artifact("test_results", f"docs/sdlc/{slug}/test-results.md")
   - Text logs (text/plain)
 - Includes security checks to prevent directory traversal
 
-### 3. Enhanced Dashboard UI (`sdlc_orchestrator/ui/dashboard.html`)
+### 3. Enhanced Dashboard UI
 
 #### Added Evidence Viewer Modal
 - Beautiful modal overlay with sidebar navigation
